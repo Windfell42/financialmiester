@@ -304,9 +304,11 @@ class PdfParserService
      */
     public function parseIncomeStatement(string $filePath): array
     {
+        $this->debugLog("=== parseIncomeStatement ===");
         $text = $this->extractText($filePath);
         $lines = $this->normalizeLines($text);
         $merged = $this->mergeAdjacentLines($lines);
+        $this->debugLog("Normalized lines: " . count($lines) . ", merged lines: " . count($merged));
         return $this->extractIncomeStatementData($merged, $text);
     }
 
@@ -315,9 +317,11 @@ class PdfParserService
      */
     public function parseBalanceSheet(string $filePath): array
     {
+        $this->debugLog("=== parseBalanceSheet ===");
         $text = $this->extractText($filePath);
         $lines = $this->normalizeLines($text);
         $merged = $this->mergeAdjacentLines($lines);
+        $this->debugLog("Normalized lines: " . count($lines) . ", merged lines: " . count($merged));
         return $this->extractBalanceSheetData($merged, $text);
     }
 
@@ -396,22 +400,47 @@ class PdfParserService
             return null;
         }
 
-        // Take the last match (typically most-recent period in multi-column statements)
-        $raw = trim(end($matches[1]));
+        // Filter out matches that look like years (4-digit numbers between 1900-2099
+        // with no $ sign, comma, decimal, or parentheses)
+        $candidates = [];
+        foreach ($matches[1] as $m) {
+            $trimmed = trim($m);
+            $digitsOnly = preg_replace('/[^0-9]/', '', $trimmed);
 
-        // Skip very short matches that are likely dates or page numbers (e.g. "2024", "12")
-        $digits = preg_replace('/[^0-9]/', '', $raw);
-        if (strlen($digits) < 2) {
-            // Try the second-to-last match if available
-            if (count($matches[1]) >= 2) {
-                $raw = trim($matches[1][count($matches[1]) - 2]);
-                $digits = preg_replace('/[^0-9]/', '', $raw);
-                if (strlen($digits) < 2) {
-                    return null;
-                }
-            } else {
-                return null;
+            // Skip standalone years (e.g., "2024", "2025")
+            $isYear = (strlen($digitsOnly) === 4
+                && !str_contains($trimmed, '$')
+                && !str_contains($trimmed, ',')
+                && !str_contains($trimmed, '.')
+                && !str_contains($trimmed, '(')
+                && (int) $digitsOnly >= 1900
+                && (int) $digitsOnly <= 2099);
+
+            if ($isYear) {
+                continue;
             }
+
+            $candidates[] = $trimmed;
+        }
+
+        if (empty($candidates)) {
+            return null;
+        }
+
+        // Take the last non-year match
+        $raw = end($candidates);
+        $digits = preg_replace('/[^0-9]/', '', $raw);
+
+        // Allow even single-digit amounts if preceded by $ or in parens
+        // Only skip if it's a bare single digit with no financial markers
+        if (strlen($digits) === 0) {
+            return null;
+        }
+        if (strlen($digits) === 1
+            && !str_contains($raw, '$')
+            && !str_contains($raw, '(')
+            && !str_contains($raw, '-')) {
+            return null;
         }
 
         $negative = (str_contains($raw, '(') && str_contains($raw, ')'))
@@ -520,7 +549,10 @@ class PdfParserService
             'cost_of_goods_sold' => [
                 'cost of goods sold', 'cost of revenue', 'cost of sales',
                 'cost of products sold', 'cost of services', 'cogs',
-                'total cost of revenue',
+                'total cost of revenue', 'cost of goods', 'direct costs',
+                'direct cost of revenue', 'direct cost of sales',
+                'cost of services sold', 'cost of sales and services',
+                'cost of products', 'direct expenses',
             ],
             'gross_profit' => [
                 'gross profit', 'gross margin', 'gross income',
@@ -540,6 +572,11 @@ class PdfParserService
                 'interest expense', 'interest cost', 'finance cost',
                 'finance expense', 'interest and debt expense',
                 'interest paid', 'net interest expense',
+                'finance charges', 'financing costs', 'financing expense',
+                'interest on loans', 'interest on debt', 'loan interest',
+                'total interest expense', 'borrowing costs',
+                'interest & financing', 'interest income (expense)',
+                'interest charges',
             ],
             'income_tax' => [
                 'income tax expense', 'provision for income tax',
@@ -553,6 +590,11 @@ class PdfParserService
             'depreciation_amortization' => [
                 'depreciation and amortization', 'depreciation & amortization',
                 'depreciation', 'amortization', 'd&a',
+                'depreciation expense', 'amortization expense',
+                'depreciation/amortization', 'dep. & amort.',
+                'dep & amort', 'depr. and amort', 'depr and amort',
+                'total depreciation', 'depreciation cost',
+                'depreciation & amort', 'depr.', 'dep.',
             ],
         ];
 
@@ -564,11 +606,17 @@ class PdfParserService
 
             $data['line_items'][] = ['label' => $line, 'amount' => $amount];
 
+            $matched = false;
             foreach ($fieldMap as $field => $keywords) {
                 if ($data[$field] === null && $this->lineMatchesAny($line, $keywords)) {
                     $data[$field] = $amount;
+                    $this->debugLog("  MATCHED '{$field}' = {$amount} from: " . mb_substr($line, 0, 100));
+                    $matched = true;
                     break;
                 }
+            }
+            if (!$matched) {
+                $this->debugLog("  UNMATCHED line (amount={$amount}): " . mb_substr($line, 0, 100));
             }
         }
 
@@ -676,11 +724,17 @@ class PdfParserService
 
             $data['line_items'][] = ['label' => $line, 'amount' => $amount];
 
+            $matched = false;
             foreach ($fieldMap as $field => $keywords) {
                 if ($data[$field] === null && $this->lineMatchesAny($line, $keywords)) {
                     $data[$field] = $amount;
+                    $this->debugLog("  MATCHED '{$field}' = {$amount} from: " . mb_substr($line, 0, 100));
+                    $matched = true;
                     break;
                 }
+            }
+            if (!$matched) {
+                $this->debugLog("  UNMATCHED line (amount={$amount}): " . mb_substr($line, 0, 100));
             }
         }
 
