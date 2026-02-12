@@ -539,20 +539,21 @@ class PdfParserService
             'line_items' => [],
         ];
 
-        // Keywords ordered from most-specific to least-specific within each field
+        // ── Check the most specific / aggregate lines FIRST to prevent
+        //    merged lines like "Income Net Income 5000" from matching
+        //    "revenue" (which has generic keyword "income") instead of
+        //    "net_income". Order: bottom-line totals → sub-totals → line items.
         $fieldMap = [
-            'revenue' => [
-                'total revenue', 'total net revenue', 'net revenue', 'net sales',
-                'total sales', 'gross revenue', 'revenue', 'sales', 'income earned',
-                'total income', 'fee income', 'service revenue',
+            'net_income' => [
+                'net income', 'net profit', 'net earnings', 'net loss',
+                'profit after tax', 'income after tax', 'net income (loss)',
+                'net income attributable', 'total net income',
+                'net income loss', 'bottom line',
             ],
-            'cost_of_goods_sold' => [
-                'cost of goods sold', 'cost of revenue', 'cost of sales',
-                'cost of products sold', 'cost of services', 'cogs',
-                'total cost of revenue', 'cost of goods', 'direct costs',
-                'direct cost of revenue', 'direct cost of sales',
-                'cost of services sold', 'cost of sales and services',
-                'cost of products', 'direct expenses',
+            'operating_income' => [
+                'operating income', 'operating profit', 'operating loss',
+                'income from operations', 'loss from operations', 'ebit',
+                'earnings before interest',
             ],
             'gross_profit' => [
                 'gross profit', 'gross margin', 'gross income',
@@ -563,10 +564,9 @@ class PdfParserService
                 'selling, general and administrative', 'sg&a', 'sga',
                 'selling general and admin',
             ],
-            'operating_income' => [
-                'operating income', 'operating profit', 'operating loss',
-                'income from operations', 'loss from operations', 'ebit',
-                'earnings before interest',
+            'income_tax' => [
+                'income tax expense', 'provision for income tax',
+                'income taxes', 'income tax', 'tax expense', 'tax provision',
             ],
             'interest_expense' => [
                 'interest expense', 'interest cost', 'finance cost',
@@ -578,15 +578,6 @@ class PdfParserService
                 'interest & financing', 'interest income (expense)',
                 'interest charges',
             ],
-            'income_tax' => [
-                'income tax expense', 'provision for income tax',
-                'income taxes', 'income tax', 'tax expense', 'tax provision',
-            ],
-            'net_income' => [
-                'net income', 'net profit', 'net earnings', 'net loss',
-                'profit after tax', 'income after tax', 'net income (loss)',
-                'net income attributable', 'total net income',
-            ],
             'depreciation_amortization' => [
                 'depreciation and amortization', 'depreciation & amortization',
                 'depreciation', 'amortization', 'd&a',
@@ -595,6 +586,23 @@ class PdfParserService
                 'dep & amort', 'depr. and amort', 'depr and amort',
                 'total depreciation', 'depreciation cost',
                 'depreciation & amort', 'depr.', 'dep.',
+            ],
+            'cost_of_goods_sold' => [
+                'cost of goods sold', 'cost of revenue', 'cost of sales',
+                'cost of products sold', 'cost of services', 'cogs',
+                'total cost of revenue', 'cost of goods', 'direct costs',
+                'direct cost of revenue', 'direct cost of sales',
+                'cost of services sold', 'cost of sales and services',
+                'cost of products', 'direct expenses',
+            ],
+
+            // ── Revenue last: its generic keywords ("sales", "income",
+            //    "total income") could steal lines from more specific fields
+            'revenue' => [
+                'total revenue', 'total net revenue', 'net revenue', 'net sales',
+                'total sales', 'gross revenue', 'revenue', 'sales', 'income earned',
+                'total income', 'fee income', 'service revenue',
+                'gross sales',
             ],
         ];
 
@@ -654,10 +662,40 @@ class PdfParserService
         ];
 
         $fieldMap = [
+            // ── Check aggregate totals FIRST (most specific, prevents
+            //    sub-field keywords from stealing merged total lines) ──
+            'total_assets' => [
+                'total assets', 'assets total',
+            ],
+            'total_liabilities' => [
+                'total liabilities', 'liabilities total',
+                'total liabilities and equity',
+            ],
+            'total_equity' => [
+                'total equity', "total stockholders' equity",
+                'total stockholders equity', "total shareholders' equity",
+                'total shareholders equity', 'stockholders equity',
+                'shareholders equity', "shareholders' equity",
+                "stockholders' equity", 'total owner equity',
+                'net worth', 'total net worth',
+                "owner's equity", 'owners equity',
+            ],
+            'total_current_assets' => [
+                'total current assets', 'current assets total',
+                'current assets',
+            ],
+            'total_current_liabilities' => [
+                'total current liabilities', 'current liabilities total',
+                'current liabilities',
+            ],
+
+            // ── Then check sub-fields ──
             'cash' => [
                 'cash and cash equivalents', 'cash & cash equivalents',
                 'cash and equivalents', 'cash & equivalents',
-                'cash, cash equivalents', 'total cash', 'cash',
+                'cash, cash equivalents', 'total cash',
+                'cash on hand', 'cash in bank', 'petty cash',
+                'cash',
             ],
             'accounts_receivable' => [
                 'accounts receivable, net', 'accounts receivable net',
@@ -667,13 +705,6 @@ class PdfParserService
             'inventory' => [
                 'inventories, net', 'inventories net',
                 'inventory', 'inventories', 'merchandise inventory',
-            ],
-            'total_current_assets' => [
-                'total current assets', 'current assets total',
-                'current assets',
-            ],
-            'total_assets' => [
-                'total assets',
             ],
             'property_plant_equipment' => [
                 'property, plant and equipment', 'property plant and equipment',
@@ -689,25 +720,10 @@ class PdfParserService
                 'current portion of long-term debt', 'current portion of debt',
                 'notes payable', 'short-term borrowings',
             ],
-            'total_current_liabilities' => [
-                'total current liabilities', 'current liabilities total',
-                'current liabilities',
-            ],
             'long_term_debt' => [
                 'long-term debt', 'long term debt', 'total long-term debt',
                 'long-term borrowings', 'long term borrowings',
                 'non-current debt', 'long-term liabilities',
-            ],
-            'total_liabilities' => [
-                'total liabilities',
-            ],
-            'total_equity' => [
-                'total equity', "total stockholders' equity",
-                'total stockholders equity', "total shareholders' equity",
-                'total shareholders equity', 'stockholders equity',
-                'shareholders equity', "shareholders' equity",
-                "stockholders' equity", 'total owner equity',
-                'net worth', 'total net worth',
             ],
             'retained_earnings' => [
                 'retained earnings', 'accumulated earnings',
