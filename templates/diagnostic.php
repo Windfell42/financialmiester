@@ -20,8 +20,15 @@
         <h2>Income Statement &mdash; Extracted Text</h2>
         <?php if (empty(trim($incomeData['raw_text']))): ?>
             <p style="color:var(--color-red);">
-                <strong>No text was extracted.</strong> This PDF likely contains scanned images rather than
-                selectable text. Consider using an OCR tool to convert it first.
+                <strong>No text could be extracted.</strong> This can happen when:
+            </p>
+            <ul style="color:var(--color-red);font-size:0.85rem;margin:0.25rem 0 0 1.2rem;">
+                <li>The PDF contains scanned images rather than selectable text.</li>
+                <li>The PDF uses custom fonts that cannot be decoded.</li>
+            </ul>
+            <p style="color:var(--color-text-muted);font-size:0.85rem;margin-top:0.5rem;">
+                <strong>Tip:</strong> Try opening the PDF and selecting text with Ctrl+A. If you can select and copy text, the PDF is text-based and should work &mdash; please report this as a bug.
+                If text is not selectable, the PDF needs to be converted first: open it in Adobe Acrobat or a free tool like <em>ocrmypdf</em> to add a text layer, then re-upload.
             </p>
         <?php else: ?>
             <p style="color:var(--color-text-muted);font-size:0.85rem;margin-bottom:0.75rem;">
@@ -49,8 +56,15 @@
         <h2>Balance Sheet &mdash; Extracted Text</h2>
         <?php if (empty(trim($balanceData['raw_text']))): ?>
             <p style="color:var(--color-red);">
-                <strong>No text was extracted.</strong> This PDF likely contains scanned images rather than
-                selectable text. Consider using an OCR tool to convert it first.
+                <strong>No text could be extracted.</strong> This can happen when:
+            </p>
+            <ul style="color:var(--color-red);font-size:0.85rem;margin:0.25rem 0 0 1.2rem;">
+                <li>The PDF contains scanned images rather than selectable text.</li>
+                <li>The PDF uses custom fonts that cannot be decoded.</li>
+            </ul>
+            <p style="color:var(--color-text-muted);font-size:0.85rem;margin-top:0.5rem;">
+                <strong>Tip:</strong> Try opening the PDF and selecting text with Ctrl+A. If you can select and copy text, the PDF is text-based and should work &mdash; please report this as a bug.
+                If text is not selectable, the PDF needs to be converted first: open it in Adobe Acrobat or a free tool like <em>ocrmypdf</em> to add a text layer, then re-upload.
             </p>
         <?php else: ?>
             <p style="color:var(--color-text-muted);font-size:0.85rem;margin-bottom:0.75rem;">

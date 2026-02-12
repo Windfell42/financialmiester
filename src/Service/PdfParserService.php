@@ -14,22 +14,152 @@ class PdfParserService
     }
 
     /**
+     * Write a line to the OCR debug log (var/log/ocr_debug.log).
+     */
+    private function debugLog(string $msg): void
+    {
+        static $logFile = null;
+        if ($logFile === null) {
+            $logDir = dirname(__DIR__, 2) . '/var/log';
+            if (!is_dir($logDir)) {
+                @mkdir($logDir, 0755, true);
+            }
+            $logFile = $logDir . '/ocr_debug.log';
+        }
+        @file_put_contents($logFile, date('[Y-m-d H:i:s] ') . $msg . "\n", FILE_APPEND);
+    }
+
+    /**
      * Extract text content from a PDF file (all pages).
-     * Falls back to OCR (Tesseract + pdftoppm) for scanned/image PDFs.
+     * Tries multiple methods in order:
+     *   1. Smalot\PdfParser (pure PHP — works everywhere)
+     *   2. pdftotext CLI (lighter than OCR, sometimes available on shared hosts)
+     *   3. Tesseract OCR (requires pdftoppm + tesseract binaries)
      */
     public function extractText(string $filePath): string
     {
-        $pdf = $this->parser->parseFile($filePath);
-        $text = $pdf->getText();
+        $this->debugLog("=== extractText START for: {$filePath} ===");
 
-        // If the standard parser got meaningful text, use it
-        $stripped = preg_replace('/\s+/', '', $text);
-        if (strlen($stripped) > 50) {
+        // ── 1. Smalot\PdfParser (pure PHP) ──────────────────────────
+        $text = $this->extractTextViaSmalot($filePath);
+        $digitCount = preg_match_all('/\d/', $text);
+        $this->debugLog("Smalot: " . strlen($text) . " chars, {$digitCount} digits");
+
+        if ($digitCount >= 3) {
+            $this->debugLog("Using Smalot output (has digits)");
             return $text;
         }
 
-        // Fall back to OCR for scanned / image-based PDFs
-        return $this->extractTextViaOcr($filePath);
+        // ── 2. pdftotext from poppler-utils (lighter than full OCR) ─
+        $text = $this->extractTextViaPdftotext($filePath);
+        $digitCount = preg_match_all('/\d/', $text);
+        $this->debugLog("pdftotext: " . strlen($text) . " chars, {$digitCount} digits");
+
+        if ($digitCount >= 3) {
+            $this->debugLog("Using pdftotext output");
+            return $text;
+        }
+
+        // ── 3. Full OCR (Tesseract + pdftoppm) ──────────────────────
+        $text = $this->extractTextViaOcr($filePath);
+        $digitCount = preg_match_all('/\d/', $text);
+        $this->debugLog("OCR: " . strlen($text) . " chars, {$digitCount} digits");
+
+        if ($digitCount >= 3) {
+            $this->debugLog("Using OCR output");
+            return $this->cleanOcrText($text);
+        }
+
+        // ── Nothing worked — return whatever Smalot got (even if empty) ──
+        // Re-extract with Smalot so the diagnostic page at least shows raw output
+        $this->debugLog("WARNING: No extraction method produced useful text");
+        return $this->extractTextViaSmalot($filePath);
+    }
+
+    /**
+     * Extract text using the pure-PHP Smalot\PdfParser library.
+     * Tries whole-document extraction first, then page-by-page as a fallback.
+     */
+    private function extractTextViaSmalot(string $filePath): string
+    {
+        try {
+            $pdf = $this->parser->parseFile($filePath);
+
+            // Try whole-document extraction first
+            $text = $pdf->getText();
+            $digitCount = preg_match_all('/\d/', $text);
+
+            if ($digitCount >= 3) {
+                return $text;
+            }
+
+            // Fallback: extract page by page (sometimes works when getText() doesn't)
+            $pages = $pdf->getPages();
+            $this->debugLog("Smalot page-by-page: " . count($pages) . " pages found");
+            $pageTexts = [];
+
+            foreach ($pages as $i => $page) {
+                try {
+                    $pageText = $page->getText();
+                    $this->debugLog("  Page {$i}: " . strlen($pageText) . " chars");
+                    $pageTexts[] = $pageText;
+                } catch (\Throwable $e) {
+                    $this->debugLog("  Page {$i} FAILED: " . $e->getMessage());
+                }
+            }
+
+            $combined = implode("\n", $pageTexts);
+            return strlen($combined) > strlen($text) ? $combined : $text;
+        } catch (\Throwable $e) {
+            $this->debugLog("Smalot EXCEPTION: " . $e->getMessage());
+            return '';
+        }
+    }
+
+    /**
+     * Try extracting text via the pdftotext CLI tool (from poppler-utils).
+     * This is lighter than full OCR and is sometimes available on shared hosts.
+     */
+    private function extractTextViaPdftotext(string $filePath): string
+    {
+        // Try common binary locations
+        $candidates = ['/usr/bin/pdftotext', '/usr/local/bin/pdftotext'];
+        $binary = null;
+
+        foreach ($candidates as $path) {
+            if (@is_executable($path)) {
+                $binary = $path;
+                break;
+            }
+        }
+
+        // Also try bare command (might be on PATH)
+        if ($binary === null) {
+            $output = [];
+            $code = 0;
+            @exec('which pdftotext 2>/dev/null', $output, $code);
+            if ($code === 0 && !empty($output[0])) {
+                $binary = trim($output[0]);
+            }
+        }
+
+        if ($binary === null) {
+            $this->debugLog("pdftotext: NOT FOUND");
+            return '';
+        }
+
+        $this->debugLog("pdftotext binary: {$binary}");
+        $escaped = escapeshellarg($filePath);
+        $output = [];
+        $code = 0;
+        exec("{$binary} -layout {$escaped} - 2>/dev/null", $output, $code);
+
+        if ($code !== 0) {
+            $this->debugLog("pdftotext exit code: {$code}");
+            return '';
+        }
+
+        return implode("\n", $output);
     }
 
     /**
@@ -38,54 +168,38 @@ class PdfParserService
      */
     private function extractTextViaOcr(string $filePath): string
     {
-        $tmpDir = sys_get_temp_dir() . '/fm_ocr_' . uniqid('', true);
-        mkdir($tmpDir, 0755, true);
-
         // Use absolute paths — web server PATH may not include /usr/bin
         $pdftoppm = '/usr/bin/pdftoppm';
         $tesseract = '/usr/bin/tesseract';
 
-        // Debug log for diagnosing OCR issues
-        $logDir = dirname(__DIR__, 2) . '/var/log';
-        if (!is_dir($logDir)) {
-            @mkdir($logDir, 0755, true);
+        if (!@is_executable($pdftoppm) || !@is_executable($tesseract)) {
+            $this->debugLog("OCR: binaries not available (pdftoppm="
+                . (@is_executable($pdftoppm) ? 'yes' : 'NO')
+                . ", tesseract=" . (@is_executable($tesseract) ? 'yes' : 'NO') . ")");
+            return '';
         }
-        $logFile = $logDir . '/ocr_debug.log';
 
-        $log = function (string $msg) use ($logFile) {
-            @file_put_contents($logFile, date('[Y-m-d H:i:s] ') . $msg . "\n", FILE_APPEND);
-        };
-
-        $log("OCR start for: {$filePath}");
-        $log("pdftoppm exists: " . (is_executable($pdftoppm) ? 'yes' : 'NO'));
-        $log("tesseract exists: " . (is_executable($tesseract) ? 'yes' : 'NO'));
+        $tmpDir = sys_get_temp_dir() . '/fm_ocr_' . uniqid('', true);
+        mkdir($tmpDir, 0755, true);
 
         try {
-            // Convert PDF pages to PNG images (300 DPI for good OCR quality)
             $pdfEscaped = escapeshellarg($filePath);
             $prefixEscaped = escapeshellarg($tmpDir . '/page');
             $output = [];
             $code = 0;
             exec("{$pdftoppm} -r 300 -png {$pdfEscaped} {$prefixEscaped} 2>&1", $output, $code);
 
-            $log("pdftoppm exit code: {$code}");
             if ($code !== 0) {
-                $log("pdftoppm stderr: " . implode("\n", $output));
+                $this->debugLog("pdftoppm failed (exit {$code}): " . implode("\n", $output));
                 return '';
             }
 
-            // Collect all generated page images, sorted by name
             $images = glob($tmpDir . '/page-*.png');
-            $log("Images generated: " . count($images));
             if (empty($images)) {
                 return '';
             }
             sort($images);
 
-            // Try multiple PSM modes and keep the one that yields more useful text
-            // PSM 4 = column of variable-size text (good for financial tables)
-            // PSM 6 = uniform block of text (general fallback)
-            // PSM 3 = fully automatic (let Tesseract decide)
             $psmModes = [4, 3, 6];
             $bestText = '';
             $bestScore = 0;
@@ -101,27 +215,16 @@ class PdfParserService
                         $attempt .= implode("\n", $ocrLines) . "\n";
                     }
                 }
-                // Score = number of lines containing at least one digit (financial data has numbers)
                 $score = preg_match_all('/^.*\d+.*$/m', $attempt);
-                $log("PSM {$psm}: {$score} lines with digits, " . strlen($attempt) . " chars total");
+                $this->debugLog("PSM {$psm}: {$score} lines with digits, " . strlen($attempt) . " chars");
                 if ($score > $bestScore) {
                     $bestScore = $score;
                     $bestText = $attempt;
                 }
             }
 
-            $log("Best score: {$bestScore}, text length: " . strlen($bestText));
-            if ($bestScore === 0 && strlen($bestText) === 0) {
-                $log("WARNING: No text extracted by any PSM mode");
-            }
-
-            $result = $this->cleanOcrText($bestText);
-            // Log first 2000 chars of cleaned output for debugging
-            $log("Cleaned OCR output (first 2000 chars):\n" . substr($result, 0, 2000));
-
-            return $result;
+            return $bestText;
         } finally {
-            // Clean up temp images
             $files = glob($tmpDir . '/*');
             foreach ($files as $f) {
                 @unlink($f);
