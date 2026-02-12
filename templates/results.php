@@ -1,0 +1,176 @@
+<?php
+/** @var array $results */
+/** @var array $incomeData */
+/** @var array $balanceData */
+
+$score = $results['score'];
+$rating = $results['rating'];
+$scoreClass = match (true) {
+    $score >= 85 => 'excellent',
+    $score >= 70 => 'good',
+    $score >= 55 => 'fair',
+    $score >= 40 => 'below',
+    $score >= 25 => 'poor',
+    default       => 'critical',
+};
+?>
+
+<!-- Score Hero -->
+<div class="score-hero">
+    <div class="score-circle <?= $scoreClass ?>">
+        <?= $score ?>
+    </div>
+    <div class="score-label"><?= htmlspecialchars($rating) ?></div>
+</div>
+
+<!-- Appraisal -->
+<div class="appraisal-box">
+    <h2>Appraisal</h2>
+    <p><?= htmlspecialchars($results['appraisal']) ?></p>
+</div>
+
+<!-- Key Metrics -->
+<?php if (!empty($results['metrics'])): ?>
+<h2 class="section-title">Key Financial Metrics</h2>
+<div class="metrics-grid">
+    <?php
+    $metricLabels = [
+        'gross_margin' => ['Gross Margin', '%'],
+        'operating_margin' => ['Operating Margin', '%'],
+        'net_profit_margin' => ['Net Profit Margin', '%'],
+        'ebitda_margin' => ['EBITDA Margin', '%'],
+        'return_on_assets' => ['Return on Assets', '%'],
+        'return_on_equity' => ['Return on Equity', '%'],
+        'current_ratio' => ['Current Ratio', 'x'],
+        'quick_ratio' => ['Quick Ratio', 'x'],
+        'cash_ratio' => ['Cash Ratio', 'x'],
+        'debt_to_equity' => ['Debt-to-Equity', 'x'],
+        'debt_to_assets' => ['Debt-to-Assets', ''],
+        'interest_coverage' => ['Interest Coverage', 'x'],
+        'asset_turnover' => ['Asset Turnover', 'x'],
+        'equity_ratio' => ['Equity Ratio', ''],
+        'working_capital' => ['Working Capital', '$'],
+        'receivables_pct_revenue' => ['Receivables % Rev', '%'],
+    ];
+
+    foreach ($results['metrics'] as $key => $value):
+        $label = $metricLabels[$key][0] ?? ucwords(str_replace('_', ' ', $key));
+        $suffix = $metricLabels[$key][1] ?? '';
+        $formatted = ($suffix === '$')
+            ? '$' . number_format($value)
+            : number_format($value, 2) . $suffix;
+    ?>
+    <div class="metric-card">
+        <div class="label"><?= htmlspecialchars($label) ?></div>
+        <div class="value"><?= $formatted ?></div>
+    </div>
+    <?php endforeach; ?>
+</div>
+<?php endif; ?>
+
+<!-- Red Flags -->
+<?php if (!empty($results['red_flags'])): ?>
+<h2 class="section-title">Red Flags (<?= count($results['red_flags']) ?>)</h2>
+<ul class="flag-list">
+    <?php foreach ($results['red_flags'] as $flag): ?>
+    <li class="severity-<?= htmlspecialchars($flag['severity'] ?? 'medium') ?>">
+        <div class="category"><?= htmlspecialchars($flag['category']) ?></div>
+        <div class="title">
+            <?= htmlspecialchars($flag['title']) ?>
+            <span class="severity-badge <?= htmlspecialchars($flag['severity'] ?? 'medium') ?>">
+                <?= htmlspecialchars($flag['severity'] ?? 'medium') ?>
+            </span>
+        </div>
+        <div class="detail"><?= htmlspecialchars($flag['detail']) ?></div>
+    </li>
+    <?php endforeach; ?>
+</ul>
+<?php endif; ?>
+
+<!-- Opportunities -->
+<?php if (!empty($results['opportunities'])): ?>
+<h2 class="section-title">Opportunities &amp; Strengths (<?= count($results['opportunities']) ?>)</h2>
+<ul class="opp-list">
+    <?php foreach ($results['opportunities'] as $opp): ?>
+    <li>
+        <div class="category"><?= htmlspecialchars($opp['category']) ?></div>
+        <div class="title"><?= htmlspecialchars($opp['title']) ?></div>
+        <div class="detail"><?= htmlspecialchars($opp['detail']) ?></div>
+    </li>
+    <?php endforeach; ?>
+</ul>
+<?php endif; ?>
+
+<!-- Recommendation -->
+<div class="recommendation-box">
+    <h2>Recommendation</h2>
+    <p><?= nl2br(htmlspecialchars($results['recommendation'])) ?></p>
+</div>
+
+<!-- Parsed Data Summary -->
+<details style="margin-bottom:2rem;">
+    <summary style="cursor:pointer; color:var(--color-primary); font-weight:600; margin-bottom:0.5rem;">
+        View Parsed Financial Data
+    </summary>
+    <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem; margin-top:1rem;">
+        <div class="appraisal-box">
+            <h2>Income Statement (Parsed)</h2>
+            <?php
+            $incFields = [
+                'revenue' => 'Revenue',
+                'cost_of_goods_sold' => 'Cost of Goods Sold',
+                'gross_profit' => 'Gross Profit',
+                'operating_expenses' => 'Operating Expenses',
+                'operating_income' => 'Operating Income',
+                'interest_expense' => 'Interest Expense',
+                'income_tax' => 'Income Tax',
+                'net_income' => 'Net Income',
+                'depreciation_amortization' => 'Depreciation & Amortization',
+                'ebitda' => 'EBITDA',
+            ];
+            foreach ($incFields as $k => $label):
+                $val = $incomeData[$k] ?? null;
+            ?>
+            <p><strong><?= $label ?>:</strong>
+                <?php if ($val !== null): ?>
+                    $<?= number_format($val, 0) ?>
+                <?php else: ?>
+                    <span style="color:var(--color-text-muted);">Not detected</span>
+                <?php endif; ?>
+            </p>
+            <?php endforeach; ?>
+        </div>
+        <div class="appraisal-box">
+            <h2>Balance Sheet (Parsed)</h2>
+            <?php
+            $balFields = [
+                'cash' => 'Cash & Equivalents',
+                'accounts_receivable' => 'Accounts Receivable',
+                'inventory' => 'Inventory',
+                'total_current_assets' => 'Total Current Assets',
+                'total_assets' => 'Total Assets',
+                'property_plant_equipment' => 'Property, Plant & Equipment',
+                'accounts_payable' => 'Accounts Payable',
+                'short_term_debt' => 'Short-Term Debt',
+                'total_current_liabilities' => 'Total Current Liabilities',
+                'long_term_debt' => 'Long-Term Debt',
+                'total_liabilities' => 'Total Liabilities',
+                'total_equity' => 'Total Equity',
+                'retained_earnings' => 'Retained Earnings',
+            ];
+            foreach ($balFields as $k => $label):
+                $val = $balanceData[$k] ?? null;
+            ?>
+            <p><strong><?= $label ?>:</strong>
+                <?php if ($val !== null): ?>
+                    $<?= number_format($val, 0) ?>
+                <?php else: ?>
+                    <span style="color:var(--color-text-muted);">Not detected</span>
+                <?php endif; ?>
+            </p>
+            <?php endforeach; ?>
+        </div>
+    </div>
+</details>
+
+<a href="index.php" class="back-link">&larr; Analyze Another Set of Documents</a>
