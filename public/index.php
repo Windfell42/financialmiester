@@ -82,9 +82,10 @@ function handleUpload(string &$error): string
         ));
 
         if ($incomeFieldsFound === 0 && $balanceFieldsFound === 0) {
-            $error = 'Could not extract recognizable financial data from either PDF. '
-                   . 'Please ensure the documents contain standard financial statement formatting.';
-            return renderUploadForm($error);
+            // Show diagnostic view so user can see what was extracted
+            ob_start();
+            include __DIR__ . '/../templates/diagnostic.php';
+            return ob_get_clean();
         }
 
         $analyzer = new FinancialAnalyzer($incomeData, $balanceData);
