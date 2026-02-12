@@ -41,18 +41,42 @@ class PdfParserService
         $tmpDir = sys_get_temp_dir() . '/fm_ocr_' . uniqid('', true);
         mkdir($tmpDir, 0755, true);
 
+        // Use absolute paths — web server PATH may not include /usr/bin
+        $pdftoppm = '/usr/bin/pdftoppm';
+        $tesseract = '/usr/bin/tesseract';
+
+        // Debug log for diagnosing OCR issues
+        $logDir = dirname(__DIR__, 2) . '/var/log';
+        if (!is_dir($logDir)) {
+            @mkdir($logDir, 0755, true);
+        }
+        $logFile = $logDir . '/ocr_debug.log';
+
+        $log = function (string $msg) use ($logFile) {
+            @file_put_contents($logFile, date('[Y-m-d H:i:s] ') . $msg . "\n", FILE_APPEND);
+        };
+
+        $log("OCR start for: {$filePath}");
+        $log("pdftoppm exists: " . (is_executable($pdftoppm) ? 'yes' : 'NO'));
+        $log("tesseract exists: " . (is_executable($tesseract) ? 'yes' : 'NO'));
+
         try {
             // Convert PDF pages to PNG images (300 DPI for good OCR quality)
             $pdfEscaped = escapeshellarg($filePath);
             $prefixEscaped = escapeshellarg($tmpDir . '/page');
-            exec("pdftoppm -r 300 -png {$pdfEscaped} {$prefixEscaped} 2>&1", $output, $code);
+            $output = [];
+            $code = 0;
+            exec("{$pdftoppm} -r 300 -png {$pdfEscaped} {$prefixEscaped} 2>&1", $output, $code);
 
+            $log("pdftoppm exit code: {$code}");
             if ($code !== 0) {
+                $log("pdftoppm stderr: " . implode("\n", $output));
                 return '';
             }
 
             // Collect all generated page images, sorted by name
             $images = glob($tmpDir . '/page-*.png');
+            $log("Images generated: " . count($images));
             if (empty($images)) {
                 return '';
             }
@@ -72,20 +96,30 @@ class PdfParserService
                     $imgEscaped = escapeshellarg($image);
                     $ocrLines = [];
                     $ocrCode = 0;
-                    exec("tesseract {$imgEscaped} stdout --psm {$psm} 2>/dev/null", $ocrLines, $ocrCode);
+                    exec("{$tesseract} {$imgEscaped} stdout --psm {$psm} 2>/dev/null", $ocrLines, $ocrCode);
                     if ($ocrCode === 0) {
                         $attempt .= implode("\n", $ocrLines) . "\n";
                     }
                 }
                 // Score = number of lines containing at least one digit (financial data has numbers)
                 $score = preg_match_all('/^.*\d+.*$/m', $attempt);
+                $log("PSM {$psm}: {$score} lines with digits, " . strlen($attempt) . " chars total");
                 if ($score > $bestScore) {
                     $bestScore = $score;
                     $bestText = $attempt;
                 }
             }
 
-            return $this->cleanOcrText($bestText);
+            $log("Best score: {$bestScore}, text length: " . strlen($bestText));
+            if ($bestScore === 0 && strlen($bestText) === 0) {
+                $log("WARNING: No text extracted by any PSM mode");
+            }
+
+            $result = $this->cleanOcrText($bestText);
+            // Log first 2000 chars of cleaned output for debugging
+            $log("Cleaned OCR output (first 2000 chars):\n" . substr($result, 0, 2000));
+
+            return $result;
         } finally {
             // Clean up temp images
             $files = glob($tmpDir . '/*');
@@ -126,8 +160,22 @@ class PdfParserService
                 $trimmed = preg_replace('/(\d)([a-zA-Z])/', '$1 $2', $trimmed);
             }
 
-            // Fix common OCR character substitutions
-            // Only apply to the label portion (before the first digit sequence)
+            // Fix common OCR character substitutions in number regions
+            // Replace O/o with 0, l/I with 1 when they appear inside number-like sequences
+            $trimmed = preg_replace_callback(
+                '/(\$?\s*[\d\(][\dOolIBSs,\.\s\(\)\-]+)/',
+                function ($m) {
+                    $s = $m[0];
+                    $s = str_replace(['O', 'o'], '0', $s);
+                    $s = str_replace(['l', 'I'], '1', $s);
+                    $s = str_replace('B', '8', $s);
+                    $s = str_replace(['S', 's'], ['$', '5'], $s);
+                    return $s;
+                },
+                $trimmed
+            );
+
+            // Fix common OCR character substitutions in the label portion
             if (preg_match('/^(.*?)(\s*[\d\$\(].*)$/', $trimmed, $parts)) {
                 $label = $parts[1];
                 $numbers = $parts[2];
@@ -179,14 +227,17 @@ class PdfParserService
 
     /**
      * PDF parsers often split a label and its value across multiple lines.
-     * This merges a text-only line with the next number-containing line,
+     * This merges text-only lines with the next number-containing line,
      * and also collapses lines with excessive whitespace into a single line
      * with spaces (handling columnar layouts).
+     * OCR text can fragment a single row across 3+ lines, so we accumulate
+     * consecutive text-only lines and merge them all with the first number line.
      */
     private function mergeAdjacentLines(array $lines): array
     {
         $merged = [];
         $count = count($lines);
+        $pendingLabels = [];
 
         for ($i = 0; $i < $count; $i++) {
             $line = $lines[$i];
@@ -194,15 +245,27 @@ class PdfParserService
             // Collapse multiple spaces/tabs into a single space
             $line = preg_replace('/\s{2,}/', ' ', $line);
 
-            // If this line has no number and the next line starts with or is a number,
-            // merge them so the label and value end up on one line.
-            if (!$this->hasNumber($line) && $i + 1 < $count && $this->hasNumber($lines[$i + 1])) {
-                $nextLine = preg_replace('/\s{2,}/', ' ', $lines[$i + 1]);
-                $merged[] = $line . ' ' . $nextLine;
-                $i++; // skip the next line since we consumed it
+            if (!$this->hasNumber($line)) {
+                // Accumulate text-only lines as pending labels
+                $pendingLabels[] = $line;
+
+                // Don't accumulate more than 4 lines (avoid runaway merges)
+                if (count($pendingLabels) > 4) {
+                    $merged[] = array_shift($pendingLabels);
+                }
             } else {
+                // This line has a number — merge any pending labels onto it
+                if (!empty($pendingLabels)) {
+                    $line = implode(' ', $pendingLabels) . ' ' . $line;
+                    $pendingLabels = [];
+                }
                 $merged[] = $line;
             }
+        }
+
+        // Flush any remaining label-only lines
+        foreach ($pendingLabels as $label) {
+            $merged[] = $label;
         }
 
         return $merged;
