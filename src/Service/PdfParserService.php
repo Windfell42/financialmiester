@@ -15,11 +15,69 @@ class PdfParserService
 
     /**
      * Extract text content from a PDF file (all pages).
+     * Falls back to OCR (Tesseract + pdftoppm) for scanned/image PDFs.
      */
     public function extractText(string $filePath): string
     {
         $pdf = $this->parser->parseFile($filePath);
-        return $pdf->getText();
+        $text = $pdf->getText();
+
+        // If the standard parser got meaningful text, use it
+        $stripped = preg_replace('/\s+/', '', $text);
+        if (strlen($stripped) > 50) {
+            return $text;
+        }
+
+        // Fall back to OCR for scanned / image-based PDFs
+        return $this->extractTextViaOcr($filePath);
+    }
+
+    /**
+     * Convert PDF pages to images with pdftoppm, then OCR each with Tesseract.
+     */
+    private function extractTextViaOcr(string $filePath): string
+    {
+        $tmpDir = sys_get_temp_dir() . '/fm_ocr_' . uniqid('', true);
+        mkdir($tmpDir, 0755, true);
+
+        try {
+            // Convert PDF pages to PNG images (300 DPI for good OCR quality)
+            $pdfEscaped = escapeshellarg($filePath);
+            $prefixEscaped = escapeshellarg($tmpDir . '/page');
+            exec("pdftoppm -r 300 -png {$pdfEscaped} {$prefixEscaped} 2>&1", $output, $code);
+
+            if ($code !== 0) {
+                return '';
+            }
+
+            // Collect all generated page images, sorted by name
+            $images = glob($tmpDir . '/page-*.png');
+            if (empty($images)) {
+                return '';
+            }
+            sort($images);
+
+            $allText = '';
+            foreach ($images as $image) {
+                $imgEscaped = escapeshellarg($image);
+                $ocrOutput = '';
+                exec("tesseract {$imgEscaped} stdout --psm 6 2>/dev/null", $ocrLines, $ocrCode);
+                if ($ocrCode === 0) {
+                    $allText .= implode("\n", $ocrLines) . "\n";
+                }
+                // PSM 6 = assume uniform block of text; also try PSM 4 (column) if little was found
+                $ocrLines = [];
+            }
+
+            return $allText;
+        } finally {
+            // Clean up temp images
+            $files = glob($tmpDir . '/*');
+            foreach ($files as $f) {
+                @unlink($f);
+            }
+            @rmdir($tmpDir);
+        }
     }
 
     /**
