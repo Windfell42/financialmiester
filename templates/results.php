@@ -101,6 +101,52 @@ $scoreClass = match (true) {
 </ul>
 <?php endif; ?>
 
+<!-- Score Breakdown -->
+<?php if (!empty($results['score_breakdown'])): ?>
+<details style="margin-bottom:1.5rem;">
+    <summary style="cursor:pointer; color:var(--color-primary); font-weight:600; margin-bottom:0.5rem; font-size:1.1rem;">
+        Score Breakdown &mdash; How the Score Was Calculated
+    </summary>
+    <div class="appraisal-box" style="margin-top:0.75rem;">
+        <p style="color:var(--color-text-muted);font-size:0.85rem;margin-bottom:0.75rem;">
+            The score starts at <strong>50</strong> (neutral baseline) and is adjusted up or down based on each financial metric assessed.
+            Positive metrics add points; concerns deduct points. The final score is clamped to 0&ndash;100.
+        </p>
+        <table style="width:100%;border-collapse:collapse;font-size:0.85rem;">
+            <thead>
+                <tr style="border-bottom:2px solid var(--color-border);text-align:left;">
+                    <th style="padding:0.4rem 0.5rem;">Adjustment</th>
+                    <th style="padding:0.4rem 0.5rem;">Reason</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr style="border-bottom:1px solid var(--color-border);">
+                    <td style="padding:0.35rem 0.5rem;font-weight:600;color:var(--color-text-muted);">50.0</td>
+                    <td style="padding:0.35rem 0.5rem;color:var(--color-text-muted);">Baseline (neutral starting score)</td>
+                </tr>
+                <?php
+                $runningTotal = 50.0;
+                foreach ($results['score_breakdown'] as $entry):
+                    $pts = $entry['points'];
+                    $runningTotal += $pts;
+                    $sign = $pts >= 0 ? '+' : '';
+                    $color = $pts > 0 ? 'var(--color-green)' : ($pts < 0 ? 'var(--color-red)' : 'var(--color-text-muted)');
+                ?>
+                <tr style="border-bottom:1px solid var(--color-border);">
+                    <td style="padding:0.35rem 0.5rem;font-weight:600;color:<?= $color ?>;white-space:nowrap;"><?= $sign . $pts ?></td>
+                    <td style="padding:0.35rem 0.5rem;"><?= htmlspecialchars($entry['label']) ?></td>
+                </tr>
+                <?php endforeach; ?>
+                <tr style="border-top:2px solid var(--color-primary);">
+                    <td style="padding:0.5rem;font-weight:700;font-size:1rem;"><?= $results['score'] ?></td>
+                    <td style="padding:0.5rem;font-weight:700;">Final Score (clamped 0&ndash;100)</td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</details>
+<?php endif; ?>
+
 <!-- Recommendation -->
 <div class="recommendation-box">
     <h2>Recommendation</h2>

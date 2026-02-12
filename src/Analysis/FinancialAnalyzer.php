@@ -9,6 +9,7 @@ class FinancialAnalyzer
     private array $redFlags = [];
     private array $opportunities = [];
     private array $metrics = [];
+    private array $scoreBreakdown = [];
     private float $score = 50.0; // Start at neutral
 
     public function __construct(array $incomeData, array $balanceData)
@@ -25,6 +26,7 @@ class FinancialAnalyzer
         $this->assessLeverage();
         $this->assessEfficiency();
         $this->assessGrowthIndicators();
+        $this->assessDataCompleteness();
         $this->clampScore();
 
         return [
@@ -32,9 +34,22 @@ class FinancialAnalyzer
             'red_flags' => $this->redFlags,
             'opportunities' => $this->opportunities,
             'score' => round($this->score, 1),
+            'score_breakdown' => $this->scoreBreakdown,
             'rating' => $this->scoreToRating($this->score),
             'appraisal' => $this->generateAppraisal(),
             'recommendation' => $this->generateRecommendation(),
+        ];
+    }
+
+    /**
+     * Record a score adjustment with a human-readable label.
+     */
+    private function adjustScore(float $points, string $label): void
+    {
+        $this->score += $points;
+        $this->scoreBreakdown[] = [
+            'points' => $points,
+            'label' => $label,
         ];
     }
 
@@ -134,7 +149,7 @@ class FinancialAnalyzer
                     'detail' => "Gross margin of {$gm}% indicates strong pricing power or efficient production.",
                     'impact' => 'positive',
                 ];
-                $this->score += 8;
+                $this->adjustScore(8, "Gross margin {$gm}% > 50% (strong)");
             } elseif ($gm > 30) {
                 $this->opportunities[] = [
                     'category' => 'Profitability',
@@ -142,23 +157,32 @@ class FinancialAnalyzer
                     'detail' => "Gross margin of {$gm}% is within a healthy range.",
                     'impact' => 'positive',
                 ];
-                $this->score += 4;
-            } elseif ($gm < 15) {
+                $this->adjustScore(4, "Gross margin {$gm}% > 30% (healthy)");
+            } elseif ($gm >= 25) {
+                // Moderate — not flagged before, now surfaced as a concern
+                $this->redFlags[] = [
+                    'category' => 'Profitability',
+                    'title' => 'Moderate Gross Margin',
+                    'detail' => "Gross margin of {$gm}% is adequate but leaves limited buffer against cost increases. Industry leaders typically exceed 35%.",
+                    'severity' => 'low',
+                ];
+                $this->adjustScore(-1, "Gross margin {$gm}% is moderate (25-30%)");
+            } elseif ($gm >= 15) {
+                $this->redFlags[] = [
+                    'category' => 'Profitability',
+                    'title' => 'Below-Average Gross Margin',
+                    'detail' => "Gross margin of {$gm}% is below average. Cost structure or pricing strategy should be evaluated.",
+                    'severity' => 'medium',
+                ];
+                $this->adjustScore(-5, "Gross margin {$gm}% below average (15-25%)");
+            } else {
                 $this->redFlags[] = [
                     'category' => 'Profitability',
                     'title' => 'Low Gross Margin',
                     'detail' => "Gross margin of {$gm}% is very thin — vulnerable to cost increases or pricing pressure.",
                     'severity' => 'high',
                 ];
-                $this->score -= 10;
-            } elseif ($gm < 25) {
-                $this->redFlags[] = [
-                    'category' => 'Profitability',
-                    'title' => 'Below-Average Gross Margin',
-                    'detail' => "Gross margin of {$gm}% is below average. Consider evaluating cost structure.",
-                    'severity' => 'medium',
-                ];
-                $this->score -= 4;
+                $this->adjustScore(-10, "Gross margin {$gm}% critically low (<15%)");
             }
         }
 
@@ -172,45 +196,77 @@ class FinancialAnalyzer
                     'detail' => "Operating margin of {$om}% shows strong operational efficiency.",
                     'impact' => 'positive',
                 ];
-                $this->score += 7;
-            } elseif ($om < 0) {
+                $this->adjustScore(7, "Operating margin {$om}% > 20% (strong)");
+            } elseif ($om > 10) {
+                $this->opportunities[] = [
+                    'category' => 'Profitability',
+                    'title' => 'Adequate Operating Margin',
+                    'detail' => "Operating margin of {$om}% is reasonable but below the 15-20% range seen in operationally efficient companies.",
+                    'impact' => 'positive',
+                ];
+                $this->adjustScore(3, "Operating margin {$om}% adequate (10-20%)");
+            } elseif ($om >= 5) {
+                $this->redFlags[] = [
+                    'category' => 'Profitability',
+                    'title' => 'Thin Operating Margin',
+                    'detail' => "Operating margin of {$om}% leaves little room for error. A small revenue decline or cost increase could eliminate profitability.",
+                    'severity' => 'medium',
+                ];
+                $this->adjustScore(-5, "Operating margin {$om}% thin (5-10%)");
+            } elseif ($om >= 0) {
+                $this->redFlags[] = [
+                    'category' => 'Profitability',
+                    'title' => 'Near-Zero Operating Margin',
+                    'detail' => "Operating margin of {$om}% means the company barely breaks even on operations. Any downturn would produce losses.",
+                    'severity' => 'high',
+                ];
+                $this->adjustScore(-8, "Operating margin {$om}% near zero (0-5%)");
+            } else {
                 $this->redFlags[] = [
                     'category' => 'Profitability',
                     'title' => 'Operating Loss',
                     'detail' => "Operating margin of {$om}% indicates the company is losing money from core operations.",
                     'severity' => 'critical',
                 ];
-                $this->score -= 15;
-            } elseif ($om < 5) {
-                $this->redFlags[] = [
-                    'category' => 'Profitability',
-                    'title' => 'Thin Operating Margin',
-                    'detail' => "Operating margin of {$om}% leaves little room for error.",
-                    'severity' => 'medium',
-                ];
-                $this->score -= 5;
+                $this->adjustScore(-15, "Operating margin {$om}% negative (operating loss)");
             }
         }
 
         // Net Profit Margin
         if (isset($this->metrics['net_profit_margin'])) {
             $npm = $this->metrics['net_profit_margin'];
-            if ($npm < 0) {
-                $this->redFlags[] = [
-                    'category' => 'Profitability',
-                    'title' => 'Net Loss',
-                    'detail' => "Net profit margin of {$npm}% — the company is unprofitable.",
-                    'severity' => 'critical',
-                ];
-                $this->score -= 12;
-            } elseif ($npm > 15) {
+            if ($npm > 15) {
                 $this->opportunities[] = [
                     'category' => 'Profitability',
                     'title' => 'Excellent Net Margin',
                     'detail' => "Net profit margin of {$npm}% is excellent, showing strong bottom-line performance.",
                     'impact' => 'positive',
                 ];
-                $this->score += 8;
+                $this->adjustScore(8, "Net profit margin {$npm}% > 15% (excellent)");
+            } elseif ($npm > 5) {
+                $this->opportunities[] = [
+                    'category' => 'Profitability',
+                    'title' => 'Positive Net Margin',
+                    'detail' => "Net profit margin of {$npm}% is positive but moderate. Consider whether overhead, interest, or taxes can be optimized.",
+                    'impact' => 'positive',
+                ];
+                $this->adjustScore(3, "Net profit margin {$npm}% positive (5-15%)");
+            } elseif ($npm >= 0) {
+                $this->redFlags[] = [
+                    'category' => 'Profitability',
+                    'title' => 'Thin Net Margin',
+                    'detail' => "Net profit margin of {$npm}% is barely positive. The company retains very little of each dollar earned.",
+                    'severity' => 'medium',
+                ];
+                $this->adjustScore(-4, "Net profit margin {$npm}% barely positive (0-5%)");
+            } else {
+                $this->redFlags[] = [
+                    'category' => 'Profitability',
+                    'title' => 'Net Loss',
+                    'detail' => "Net profit margin of {$npm}% — the company is unprofitable after all expenses.",
+                    'severity' => 'critical',
+                ];
+                $this->adjustScore(-12, "Net profit margin {$npm}% negative (net loss)");
             }
         }
 
@@ -224,23 +280,31 @@ class FinancialAnalyzer
                     'detail' => "ROE of {$roe}% indicates efficient use of shareholder capital.",
                     'impact' => 'positive',
                 ];
-                $this->score += 6;
-            } elseif ($roe < 0) {
+                $this->adjustScore(6, "ROE {$roe}% > 15% (strong)");
+            } elseif ($roe > 5) {
+                $this->redFlags[] = [
+                    'category' => 'Profitability',
+                    'title' => 'Moderate Return on Equity',
+                    'detail' => "ROE of {$roe}% is below the 15% benchmark that typically signals efficient capital use. Shareholders may find better returns elsewhere.",
+                    'severity' => 'low',
+                ];
+                $this->adjustScore(-1, "ROE {$roe}% moderate (5-15%)");
+            } elseif ($roe >= 0) {
+                $this->redFlags[] = [
+                    'category' => 'Profitability',
+                    'title' => 'Low Return on Equity',
+                    'detail' => "ROE of {$roe}% is below typical benchmarks. Capital may be better deployed elsewhere.",
+                    'severity' => 'medium',
+                ];
+                $this->adjustScore(-4, "ROE {$roe}% low (0-5%)");
+            } else {
                 $this->redFlags[] = [
                     'category' => 'Profitability',
                     'title' => 'Negative Return on Equity',
                     'detail' => "ROE of {$roe}% means shareholders are losing value.",
                     'severity' => 'high',
                 ];
-                $this->score -= 8;
-            } elseif ($roe < 5) {
-                $this->redFlags[] = [
-                    'category' => 'Profitability',
-                    'title' => 'Low Return on Equity',
-                    'detail' => "ROE of {$roe}% is below typical benchmarks. Capital may be better deployed elsewhere.",
-                    'severity' => 'low',
-                ];
-                $this->score -= 3;
+                $this->adjustScore(-8, "ROE {$roe}% negative");
             }
         }
 
@@ -254,15 +318,31 @@ class FinancialAnalyzer
                     'detail' => "ROA of {$roa}% shows the company generates strong returns from its asset base.",
                     'impact' => 'positive',
                 ];
-                $this->score += 5;
-            } elseif ($roa < 1) {
+                $this->adjustScore(5, "ROA {$roa}% > 10% (strong)");
+            } elseif ($roa > 3) {
+                $this->redFlags[] = [
+                    'category' => 'Profitability',
+                    'title' => 'Moderate Return on Assets',
+                    'detail' => "ROA of {$roa}% is adequate but not exceptional. Consider whether the asset base could generate higher returns.",
+                    'severity' => 'low',
+                ];
+                $this->adjustScore(0, "ROA {$roa}% adequate (3-10%)");
+            } elseif ($roa >= 1) {
                 $this->redFlags[] = [
                     'category' => 'Profitability',
                     'title' => 'Low Return on Assets',
-                    'detail' => "ROA of {$roa}% suggests assets are not generating adequate returns.",
+                    'detail' => "ROA of {$roa}% suggests the asset base is underperforming. Asset-heavy balance sheets require stronger returns.",
                     'severity' => 'medium',
                 ];
-                $this->score -= 4;
+                $this->adjustScore(-4, "ROA {$roa}% low (1-3%)");
+            } else {
+                $this->redFlags[] = [
+                    'category' => 'Profitability',
+                    'title' => 'Very Low Return on Assets',
+                    'detail' => "ROA of {$roa}% suggests assets are not generating adequate returns.",
+                    'severity' => 'high',
+                ];
+                $this->adjustScore(-6, "ROA {$roa}% very low (<1%)");
             }
         }
     }
@@ -281,31 +361,31 @@ class FinancialAnalyzer
                     'detail' => "Current ratio of {$cr} means current liabilities exceed current assets — potential solvency risk.",
                     'severity' => 'critical',
                 ];
-                $this->score -= 12;
+                $this->adjustScore(-12, "Current ratio {$cr} < 1.0 (solvency risk)");
             } elseif ($cr < 1.5) {
                 $this->redFlags[] = [
                     'category' => 'Liquidity',
                     'title' => 'Tight Liquidity',
-                    'detail' => "Current ratio of {$cr} is below the comfortable threshold of 1.5.",
+                    'detail' => "Current ratio of {$cr} is below the comfortable threshold of 1.5. An unexpected obligation could create cash flow strain.",
                     'severity' => 'medium',
                 ];
-                $this->score -= 4;
-            } elseif ($cr >= 1.5 && $cr <= 3.0) {
+                $this->adjustScore(-4, "Current ratio {$cr} tight (1.0-1.5)");
+            } elseif ($cr <= 3.0) {
                 $this->opportunities[] = [
                     'category' => 'Liquidity',
                     'title' => 'Healthy Current Ratio',
                     'detail' => "Current ratio of {$cr} indicates adequate short-term liquidity.",
                     'impact' => 'positive',
                 ];
-                $this->score += 5;
-            } elseif ($cr > 3.0) {
-                $this->opportunities[] = [
+                $this->adjustScore(5, "Current ratio {$cr} healthy (1.5-3.0)");
+            } else {
+                $this->redFlags[] = [
                     'category' => 'Liquidity',
                     'title' => 'Excess Liquidity',
-                    'detail' => "Current ratio of {$cr} is very high — capital may not be deployed efficiently.",
-                    'impact' => 'neutral',
+                    'detail' => "Current ratio of {$cr} is very high — substantial capital is sitting idle rather than being reinvested. This may indicate overly conservative management or lack of growth opportunities.",
+                    'severity' => 'low',
                 ];
-                $this->score += 1;
+                $this->adjustScore(1, "Current ratio {$cr} excess liquidity (>3.0)");
             }
         }
 
@@ -319,15 +399,15 @@ class FinancialAnalyzer
                     'detail' => "Quick ratio of {$qr} indicates heavy reliance on inventory to meet obligations.",
                     'severity' => 'high',
                 ];
-                $this->score -= 7;
+                $this->adjustScore(-7, "Quick ratio {$qr} very low (<0.5)");
             } elseif ($qr < 1.0) {
                 $this->redFlags[] = [
                     'category' => 'Liquidity',
                     'title' => 'Quick Ratio Below 1.0',
-                    'detail' => "Quick ratio of {$qr} — may struggle to cover liabilities without selling inventory.",
+                    'detail' => "Quick ratio of {$qr} — may struggle to cover liabilities without selling inventory. In a downturn, inventory can be hard to liquidate quickly.",
                     'severity' => 'medium',
                 ];
-                $this->score -= 3;
+                $this->adjustScore(-3, "Quick ratio {$qr} below 1.0");
             } elseif ($qr >= 1.0) {
                 $this->opportunities[] = [
                     'category' => 'Liquidity',
@@ -335,7 +415,7 @@ class FinancialAnalyzer
                     'detail' => "Quick ratio of {$qr} indicates the company can cover current liabilities without relying on inventory.",
                     'impact' => 'positive',
                 ];
-                $this->score += 4;
+                $this->adjustScore(4, "Quick ratio {$qr} strong (>=1.0)");
             }
         }
 
@@ -349,7 +429,7 @@ class FinancialAnalyzer
                     'detail' => 'Working capital is negative ($' . number_format(abs($wc)) . ') — immediate cash flow concerns.',
                     'severity' => 'critical',
                 ];
-                $this->score -= 10;
+                $this->adjustScore(-10, "Negative working capital");
             } elseif ($wc > 0) {
                 $this->opportunities[] = [
                     'category' => 'Liquidity',
@@ -357,7 +437,7 @@ class FinancialAnalyzer
                     'detail' => 'Working capital of $' . number_format($wc) . ' provides a cushion for operations.',
                     'impact' => 'positive',
                 ];
-                $this->score += 3;
+                $this->adjustScore(3, "Positive working capital");
             }
         }
     }
@@ -373,34 +453,42 @@ class FinancialAnalyzer
                 $this->redFlags[] = [
                     'category' => 'Leverage',
                     'title' => 'Extremely High Debt-to-Equity',
-                    'detail' => "D/E ratio of {$de} indicates dangerously high leverage.",
+                    'detail' => "D/E ratio of {$de} indicates dangerously high leverage. The business is heavily reliant on creditors.",
                     'severity' => 'critical',
                 ];
-                $this->score -= 12;
+                $this->adjustScore(-12, "D/E ratio {$de} extremely high (>3.0)");
             } elseif ($de > 2.0) {
                 $this->redFlags[] = [
                     'category' => 'Leverage',
                     'title' => 'High Debt-to-Equity',
-                    'detail' => "D/E ratio of {$de} indicates significant financial leverage.",
+                    'detail' => "D/E ratio of {$de} indicates significant financial leverage. A credit tightening or revenue decline could create distress.",
                     'severity' => 'high',
                 ];
-                $this->score -= 7;
+                $this->adjustScore(-7, "D/E ratio {$de} high (2.0-3.0)");
             } elseif ($de > 1.0) {
                 $this->redFlags[] = [
                     'category' => 'Leverage',
                     'title' => 'Moderate Debt Load',
-                    'detail' => "D/E ratio of {$de} — liabilities exceed equity, but may be manageable.",
-                    'severity' => 'low',
+                    'detail' => "D/E ratio of {$de} — liabilities exceed equity. While potentially manageable, this limits financial flexibility and increases sensitivity to interest rate changes.",
+                    'severity' => 'medium',
                 ];
-                $this->score -= 2;
-            } elseif ($de <= 1.0) {
+                $this->adjustScore(-3, "D/E ratio {$de} moderate (1.0-2.0)");
+            } elseif ($de > 0.5) {
                 $this->opportunities[] = [
                     'category' => 'Leverage',
                     'title' => 'Conservative Debt Level',
-                    'detail' => "D/E ratio of {$de} indicates a conservatively financed company.",
+                    'detail' => "D/E ratio of {$de} indicates a conservatively financed company with room to take on additional leverage if needed.",
                     'impact' => 'positive',
                 ];
-                $this->score += 6;
+                $this->adjustScore(4, "D/E ratio {$de} conservative (0.5-1.0)");
+            } else {
+                $this->opportunities[] = [
+                    'category' => 'Leverage',
+                    'title' => 'Very Low Debt',
+                    'detail' => "D/E ratio of {$de} indicates very low leverage. While safe, the company may be underutilizing debt as a tool for growth.",
+                    'impact' => 'positive',
+                ];
+                $this->adjustScore(6, "D/E ratio {$de} very low (<0.5)");
             }
         }
 
@@ -411,18 +499,26 @@ class FinancialAnalyzer
                 $this->redFlags[] = [
                     'category' => 'Leverage',
                     'title' => 'High Debt-to-Assets',
-                    'detail' => "Debt-to-assets of {$da} means over 70% of assets are funded by debt.",
+                    'detail' => "Debt-to-assets of {$da} means over " . round($da * 100) . "% of assets are funded by debt. Creditors bear most of the risk.",
                     'severity' => 'high',
                 ];
-                $this->score -= 6;
-            } elseif ($da < 0.4) {
+                $this->adjustScore(-6, "Debt-to-assets {$da} high (>0.7)");
+            } elseif ($da > 0.4) {
+                $this->redFlags[] = [
+                    'category' => 'Leverage',
+                    'title' => 'Moderate Debt-to-Assets',
+                    'detail' => "Debt-to-assets of {$da} — " . round($da * 100) . "% of assets are debt-financed. This is within normal bounds but worth monitoring.",
+                    'severity' => 'low',
+                ];
+                $this->adjustScore(-1, "Debt-to-assets {$da} moderate (0.4-0.7)");
+            } else {
                 $this->opportunities[] = [
                     'category' => 'Leverage',
                     'title' => 'Low Debt Burden',
                     'detail' => "Debt-to-assets of {$da} indicates a strong equity-funded asset base.",
                     'impact' => 'positive',
                 ];
-                $this->score += 4;
+                $this->adjustScore(4, "Debt-to-assets {$da} low (<0.4)");
             }
         }
 
@@ -433,26 +529,34 @@ class FinancialAnalyzer
                 $this->redFlags[] = [
                     'category' => 'Leverage',
                     'title' => 'Cannot Cover Interest Payments',
-                    'detail' => "Interest coverage of {$ic}x — operating income does not cover interest expense.",
+                    'detail' => "Interest coverage of {$ic}x — operating income does not cover interest expense. Risk of debt default.",
                     'severity' => 'critical',
                 ];
-                $this->score -= 15;
+                $this->adjustScore(-15, "Interest coverage {$ic}x < 1.0 (cannot service debt)");
             } elseif ($ic < 2.0) {
                 $this->redFlags[] = [
                     'category' => 'Leverage',
                     'title' => 'Weak Interest Coverage',
-                    'detail' => "Interest coverage of {$ic}x leaves minimal margin for debt servicing.",
+                    'detail' => "Interest coverage of {$ic}x leaves minimal margin for debt servicing. Any earnings decline threatens debt obligations.",
                     'severity' => 'high',
                 ];
-                $this->score -= 8;
-            } elseif ($ic > 5.0) {
+                $this->adjustScore(-8, "Interest coverage {$ic}x weak (<2.0)");
+            } elseif ($ic < 5.0) {
+                $this->redFlags[] = [
+                    'category' => 'Leverage',
+                    'title' => 'Adequate Interest Coverage',
+                    'detail' => "Interest coverage of {$ic}x is sufficient but not robust. Lenders typically prefer coverage above 5x.",
+                    'severity' => 'low',
+                ];
+                $this->adjustScore(1, "Interest coverage {$ic}x adequate (2-5)");
+            } else {
                 $this->opportunities[] = [
                     'category' => 'Leverage',
                     'title' => 'Strong Interest Coverage',
                     'detail' => "Interest coverage of {$ic}x — ample capacity to service debt.",
                     'impact' => 'positive',
                 ];
-                $this->score += 5;
+                $this->adjustScore(5, "Interest coverage {$ic}x strong (>5.0)");
             }
         }
     }
@@ -476,15 +580,31 @@ class FinancialAnalyzer
                     'detail' => "Asset turnover of {$at}x indicates efficient use of assets to generate revenue.",
                     'impact' => 'positive',
                 ];
-                $this->score += 4;
-            } elseif ($at < 0.3) {
+                $this->adjustScore(4, "Asset turnover {$at}x high (>1.5)");
+            } elseif ($at >= 0.5) {
+                $this->redFlags[] = [
+                    'category' => 'Efficiency',
+                    'title' => 'Moderate Asset Turnover',
+                    'detail' => "Asset turnover of {$at}x is typical for asset-heavy industries but may indicate underutilized assets in other sectors.",
+                    'severity' => 'low',
+                ];
+                $this->adjustScore(0, "Asset turnover {$at}x moderate (0.5-1.5)");
+            } elseif ($at >= 0.3) {
                 $this->redFlags[] = [
                     'category' => 'Efficiency',
                     'title' => 'Low Asset Turnover',
-                    'detail' => "Asset turnover of {$at}x — assets are not generating proportional revenue.",
+                    'detail' => "Asset turnover of {$at}x — assets are generating relatively little revenue. May signal over-investment or declining sales.",
                     'severity' => 'medium',
                 ];
-                $this->score -= 4;
+                $this->adjustScore(-3, "Asset turnover {$at}x low (0.3-0.5)");
+            } else {
+                $this->redFlags[] = [
+                    'category' => 'Efficiency',
+                    'title' => 'Very Low Asset Turnover',
+                    'detail' => "Asset turnover of {$at}x — assets are not generating proportional revenue. Consider whether significant assets are idle or unproductive.",
+                    'severity' => 'high',
+                ];
+                $this->adjustScore(-5, "Asset turnover {$at}x very low (<0.3)");
             }
         }
 
@@ -497,10 +617,32 @@ class FinancialAnalyzer
                 $this->redFlags[] = [
                     'category' => 'Efficiency',
                     'title' => 'High Receivables Relative to Revenue',
-                    'detail' => "Receivables are {$receivablePct}% of revenue — possible collection issues or aggressive revenue recognition.",
+                    'detail' => "Receivables are {$receivablePct}% of revenue — possible collection issues, customer concentration risk, or aggressive revenue recognition.",
                     'severity' => 'medium',
                 ];
-                $this->score -= 5;
+                $this->adjustScore(-5, "Receivables {$receivablePct}% of revenue (>25%)");
+            } elseif ($receivablePct > 15) {
+                $this->redFlags[] = [
+                    'category' => 'Efficiency',
+                    'title' => 'Elevated Receivables',
+                    'detail' => "Receivables are {$receivablePct}% of revenue — slightly elevated. Monitor collection timelines and aging.",
+                    'severity' => 'low',
+                ];
+                $this->adjustScore(-1, "Receivables {$receivablePct}% of revenue (15-25%)");
+            }
+        }
+
+        // Gross-to-operating margin spread (cost control check)
+        if (isset($this->metrics['gross_margin']) && isset($this->metrics['operating_margin'])) {
+            $spread = $this->metrics['gross_margin'] - $this->metrics['operating_margin'];
+            if ($spread > 30) {
+                $this->redFlags[] = [
+                    'category' => 'Efficiency',
+                    'title' => 'Large Overhead Spread',
+                    'detail' => "The {$spread} percentage-point gap between gross margin and operating margin suggests high overhead costs (SG&A, R&D, etc.) are consuming a large share of gross profit.",
+                    'severity' => 'medium',
+                ];
+                $this->adjustScore(-3, "Gross-to-operating spread {$spread}pp (>30pp overhead)");
             }
         }
     }
@@ -517,10 +659,10 @@ class FinancialAnalyzer
                 $this->redFlags[] = [
                     'category' => 'Financial Health',
                     'title' => 'Negative Retained Earnings',
-                    'detail' => 'Accumulated deficit of $' . number_format(abs($bal['retained_earnings'])) . ' — historical losses exceed profits.',
+                    'detail' => 'Accumulated deficit of $' . number_format(abs($bal['retained_earnings'])) . ' — historical losses exceed profits. This may limit dividend capacity and signal chronic underperformance.',
                     'severity' => 'high',
                 ];
-                $this->score -= 8;
+                $this->adjustScore(-8, "Negative retained earnings");
             } else {
                 $this->opportunities[] = [
                     'category' => 'Financial Health',
@@ -528,29 +670,46 @@ class FinancialAnalyzer
                     'detail' => 'Retained earnings of $' . number_format($bal['retained_earnings']) . ' show accumulated profitability over time.',
                     'impact' => 'positive',
                 ];
-                $this->score += 4;
+                $this->adjustScore(4, "Positive retained earnings");
             }
         }
 
         // Equity ratio
         if (isset($this->metrics['equity_ratio'])) {
             $er = $this->metrics['equity_ratio'];
+            $erPct = round($er * 100);
             if ($er > 0.5) {
                 $this->opportunities[] = [
                     'category' => 'Financial Health',
                     'title' => 'Strong Equity Position',
-                    'detail' => "Equity ratio of " . round($er * 100) . "% — majority of assets are equity-financed.",
+                    'detail' => "Equity ratio of {$erPct}% — majority of assets are equity-financed.",
                     'impact' => 'positive',
                 ];
-                $this->score += 4;
-            } elseif ($er < 0.2) {
+                $this->adjustScore(4, "Equity ratio {$erPct}% strong (>50%)");
+            } elseif ($er >= 0.3) {
+                $this->redFlags[] = [
+                    'category' => 'Financial Health',
+                    'title' => 'Moderate Equity Position',
+                    'detail' => "Equity ratio of {$erPct}% — less than half of assets are equity-financed. The company has moderate reliance on debt funding.",
+                    'severity' => 'low',
+                ];
+                $this->adjustScore(-1, "Equity ratio {$erPct}% moderate (30-50%)");
+            } elseif ($er >= 0.2) {
+                $this->redFlags[] = [
+                    'category' => 'Financial Health',
+                    'title' => 'Low Equity Position',
+                    'detail' => "Equity ratio of {$erPct}% — the majority of assets are debt-funded, reducing the margin of safety for creditors and investors.",
+                    'severity' => 'medium',
+                ];
+                $this->adjustScore(-4, "Equity ratio {$erPct}% low (20-30%)");
+            } else {
                 $this->redFlags[] = [
                     'category' => 'Financial Health',
                     'title' => 'Thin Equity Cushion',
-                    'detail' => "Equity ratio of " . round($er * 100) . "% — very thin equity buffer.",
+                    'detail' => "Equity ratio of {$erPct}% — very thin equity buffer. The company is overwhelmingly debt-financed.",
                     'severity' => 'high',
                 ];
-                $this->score -= 6;
+                $this->adjustScore(-6, "Equity ratio {$erPct}% very thin (<20%)");
             }
         }
 
@@ -564,16 +723,83 @@ class FinancialAnalyzer
                     'detail' => "EBITDA margin of {$em}% signals robust cash generation capability.",
                     'impact' => 'positive',
                 ];
-                $this->score += 5;
-            } elseif ($em < 5 && $em >= 0) {
+                $this->adjustScore(5, "EBITDA margin {$em}% strong (>25%)");
+            } elseif ($em > 10) {
+                $this->redFlags[] = [
+                    'category' => 'Cash Generation',
+                    'title' => 'Moderate EBITDA Margin',
+                    'detail' => "EBITDA margin of {$em}% is acceptable but may not provide sufficient cushion for debt service, capital expenditure, and growth investment simultaneously.",
+                    'severity' => 'low',
+                ];
+                $this->adjustScore(1, "EBITDA margin {$em}% moderate (10-25%)");
+            } elseif ($em >= 0) {
                 $this->redFlags[] = [
                     'category' => 'Cash Generation',
                     'title' => 'Weak EBITDA Margin',
-                    'detail' => "EBITDA margin of {$em}% — cash generation from operations is thin.",
+                    'detail' => "EBITDA margin of {$em}% — cash generation from operations is thin. Limited capacity for debt payments, reinvestment, or distributions.",
                     'severity' => 'medium',
                 ];
-                $this->score -= 4;
+                $this->adjustScore(-4, "EBITDA margin {$em}% weak (0-10%)");
+            } else {
+                $this->redFlags[] = [
+                    'category' => 'Cash Generation',
+                    'title' => 'Negative EBITDA',
+                    'detail' => "EBITDA margin of {$em}% — the business is not generating cash from operations even before interest, taxes, and capital costs.",
+                    'severity' => 'critical',
+                ];
+                $this->adjustScore(-10, "EBITDA margin {$em}% negative");
             }
+        }
+    }
+
+    // ─── Data Completeness Assessment ────────────────────────────
+
+    private function assessDataCompleteness(): void
+    {
+        $inc = $this->incomeData;
+        $bal = $this->balanceData;
+
+        $missingIncome = [];
+        $missingBalance = [];
+
+        // Key income statement fields
+        if ($inc['revenue'] === null)           $missingIncome[] = 'Revenue';
+        if ($inc['cost_of_goods_sold'] === null) $missingIncome[] = 'Cost of Goods Sold';
+        if ($inc['operating_income'] === null)  $missingIncome[] = 'Operating Income';
+        if ($inc['net_income'] === null)         $missingIncome[] = 'Net Income';
+
+        // Key balance sheet fields
+        if ($bal['total_assets'] === null)            $missingBalance[] = 'Total Assets';
+        if ($bal['total_liabilities'] === null)       $missingBalance[] = 'Total Liabilities';
+        if ($bal['total_equity'] === null)            $missingBalance[] = 'Total Equity';
+        if ($bal['total_current_assets'] === null)    $missingBalance[] = 'Total Current Assets';
+        if ($bal['total_current_liabilities'] === null) $missingBalance[] = 'Total Current Liabilities';
+
+        $totalMissing = count($missingIncome) + count($missingBalance);
+
+        if ($totalMissing > 0) {
+            $allMissing = array_merge($missingIncome, $missingBalance);
+            $severity = $totalMissing >= 4 ? 'high' : ($totalMissing >= 2 ? 'medium' : 'low');
+
+            $this->redFlags[] = [
+                'category' => 'Data Quality',
+                'title' => "Incomplete Data ({$totalMissing} Key Fields Missing)",
+                'detail' => "The following key fields could not be parsed: " . implode(', ', $allMissing) . ". This limits the analysis — some ratios could not be computed, which may make the score appear better than warranted.",
+                'severity' => $severity,
+            ];
+            $penalty = min(10, $totalMissing * 2);
+            $this->adjustScore(-$penalty, "{$totalMissing} key financial fields missing");
+        }
+
+        // No interest expense detected — note the limitation
+        if ($inc['interest_expense'] === null && $bal['long_term_debt'] !== null && $bal['long_term_debt'] > 0) {
+            $this->redFlags[] = [
+                'category' => 'Data Quality',
+                'title' => 'Interest Expense Not Detected',
+                'detail' => "Long-term debt is present on the balance sheet but no interest expense was found on the income statement. This may indicate a parsing gap — interest coverage could not be assessed.",
+                'severity' => 'low',
+            ];
+            $this->adjustScore(-1, "Interest expense missing despite debt on balance sheet");
         }
     }
 
@@ -601,22 +827,28 @@ class FinancialAnalyzer
         $oppCount = count($this->opportunities);
 
         $criticalFlags = array_filter($this->redFlags, fn($f) => ($f['severity'] ?? '') === 'critical');
+        $highFlags = array_filter($this->redFlags, fn($f) => ($f['severity'] ?? '') === 'high');
         $criticalCount = count($criticalFlags);
+        $highCount = count($highFlags);
 
-        if ($score >= 80) {
+        if ($score >= 85) {
             $appraisal = "This entity demonstrates strong financial health across profitability, liquidity, and leverage metrics. ";
-            if ($oppCount > 0) {
-                $appraisal .= "There are {$oppCount} notable positive indicators. ";
-            }
+            $appraisal .= "{$oppCount} positive indicator(s) were identified";
             if ($redFlagCount > 0) {
-                $appraisal .= "While {$redFlagCount} minor concern(s) were noted, they do not materially diminish the overall financial position.";
+                $appraisal .= " alongside {$redFlagCount} area(s) for monitoring. These are minor observations that do not materially diminish the overall financial position.";
             } else {
-                $appraisal .= "No significant concerns were identified.";
+                $appraisal .= ". No material concerns were identified.";
             }
-        } elseif ($score >= 60) {
-            $appraisal = "The financial position is reasonably sound, but there are areas that warrant attention. ";
-            $appraisal .= "{$oppCount} positive indicator(s) and {$redFlagCount} concern(s) were identified. ";
-            $appraisal .= "The balance between strengths and weaknesses suggests a stable but improvable position.";
+        } elseif ($score >= 70) {
+            $appraisal = "The financial position is generally solid with {$oppCount} positive indicator(s), though the analysis identified {$redFlagCount} area(s) that warrant attention. ";
+            if ($highCount > 0) {
+                $appraisal .= "Of these, {$highCount} require closer monitoring. ";
+            }
+            $appraisal .= "Overall, the entity is well-positioned but has room for improvement in specific areas.";
+        } elseif ($score >= 55) {
+            $appraisal = "The financial position is adequate but with notable weaknesses. ";
+            $appraisal .= "{$redFlagCount} concern(s) were identified against {$oppCount} positive indicator(s). ";
+            $appraisal .= "The balance between strengths and weaknesses suggests a stable but improvable position that requires active management.";
         } elseif ($score >= 40) {
             $appraisal = "The financial data reveals a mixed picture with significant concerns. ";
             $appraisal .= "{$redFlagCount} red flag(s) were identified against {$oppCount} positive indicator(s). ";
