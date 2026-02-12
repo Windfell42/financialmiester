@@ -8,9 +8,9 @@
     The raw text extracted from your PDFs is shown below so you can diagnose the issue.
     Common causes:
     <ul style="margin:0.5rem 0 0 1.2rem;">
-        <li>The PDF is a scanned image (not selectable text) &mdash; OCR-based PDFs are not supported yet.</li>
-        <li>The financial data uses non-standard labels or formatting.</li>
-        <li>The PDF has unusual encoding that prevents text extraction.</li>
+        <li>The financial data uses non-standard labels or formatting that could not be recognized.</li>
+        <li>The PDF has unusual encoding or very low scan quality that prevents accurate text extraction.</li>
+        <li>The document language or layout differs from standard US financial statements.</li>
     </ul>
 </div>
 

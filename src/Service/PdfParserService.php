@@ -34,6 +34,7 @@ class PdfParserService
 
     /**
      * Convert PDF pages to images with pdftoppm, then OCR each with Tesseract.
+     * Tries multiple page-segmentation modes to get the best result.
      */
     private function extractTextViaOcr(string $filePath): string
     {
@@ -57,19 +58,34 @@ class PdfParserService
             }
             sort($images);
 
-            $allText = '';
-            foreach ($images as $image) {
-                $imgEscaped = escapeshellarg($image);
-                $ocrOutput = '';
-                exec("tesseract {$imgEscaped} stdout --psm 6 2>/dev/null", $ocrLines, $ocrCode);
-                if ($ocrCode === 0) {
-                    $allText .= implode("\n", $ocrLines) . "\n";
+            // Try multiple PSM modes and keep the one that yields more useful text
+            // PSM 4 = column of variable-size text (good for financial tables)
+            // PSM 6 = uniform block of text (general fallback)
+            // PSM 3 = fully automatic (let Tesseract decide)
+            $psmModes = [4, 3, 6];
+            $bestText = '';
+            $bestScore = 0;
+
+            foreach ($psmModes as $psm) {
+                $attempt = '';
+                foreach ($images as $image) {
+                    $imgEscaped = escapeshellarg($image);
+                    $ocrLines = [];
+                    $ocrCode = 0;
+                    exec("tesseract {$imgEscaped} stdout --psm {$psm} 2>/dev/null", $ocrLines, $ocrCode);
+                    if ($ocrCode === 0) {
+                        $attempt .= implode("\n", $ocrLines) . "\n";
+                    }
                 }
-                // PSM 6 = assume uniform block of text; also try PSM 4 (column) if little was found
-                $ocrLines = [];
+                // Score = number of lines containing at least one digit (financial data has numbers)
+                $score = preg_match_all('/^.*\d+.*$/m', $attempt);
+                if ($score > $bestScore) {
+                    $bestScore = $score;
+                    $bestText = $attempt;
+                }
             }
 
-            return $allText;
+            return $this->cleanOcrText($bestText);
         } finally {
             // Clean up temp images
             $files = glob($tmpDir . '/*');
@@ -78,6 +94,58 @@ class PdfParserService
             }
             @rmdir($tmpDir);
         }
+    }
+
+    /**
+     * Clean up common OCR artifacts in extracted text.
+     */
+    private function cleanOcrText(string $text): string
+    {
+        // Fix spaced-out letters: "R e v e n u e" → "Revenue"
+        // Detect lines where most "words" are single characters
+        $lines = explode("\n", $text);
+        $cleaned = [];
+
+        foreach ($lines as $line) {
+            $trimmed = trim($line);
+            if ($trimmed === '') {
+                $cleaned[] = '';
+                continue;
+            }
+
+            // Check if the line looks like spaced-out text (mostly single chars separated by spaces)
+            // e.g. "T o t a l   R e v e n u e   1 , 2 3 4"
+            $words = preg_split('/\s+/', $trimmed);
+            $singleCharCount = count(array_filter($words, fn($w) => mb_strlen($w) === 1));
+            if (count($words) > 4 && $singleCharCount / count($words) > 0.6) {
+                // Collapse by removing spaces between single chars
+                $trimmed = preg_replace('/(?<=\b\w)\s+(?=\w\b)/', '', $trimmed);
+                // Re-insert spaces at transitions: lowercase→uppercase, letter→digit, digit→letter
+                $trimmed = preg_replace('/([a-z])([A-Z])/', '$1 $2', $trimmed);
+                $trimmed = preg_replace('/([a-zA-Z])(\d)/', '$1 $2', $trimmed);
+                $trimmed = preg_replace('/(\d)([a-zA-Z])/', '$1 $2', $trimmed);
+            }
+
+            // Fix common OCR character substitutions
+            // Only apply to the label portion (before the first digit sequence)
+            if (preg_match('/^(.*?)(\s*[\d\$\(].*)$/', $trimmed, $parts)) {
+                $label = $parts[1];
+                $numbers = $parts[2];
+
+                // Common OCR misreads in financial labels
+                $label = preg_replace('/\bIlncome\b/i', 'Income', $label);
+                $label = preg_replace('/\bRovenue\b/i', 'Revenue', $label);
+                $label = preg_replace('/\bTotai\b/i', 'Total', $label);
+                $label = preg_replace('/\bExpenses?\b/i', 'Expenses', $label);
+                $label = str_replace(['|', '!'], 'l', $label);
+
+                $trimmed = $label . $numbers;
+            }
+
+            $cleaned[] = $trimmed;
+        }
+
+        return implode("\n", $cleaned);
     }
 
     /**
@@ -189,15 +257,71 @@ class PdfParserService
 
     /**
      * Check if a line matches any of the given keywords (case-insensitive).
-     * Also handles keywords split by extra whitespace in PDF extraction.
+     * Uses both exact substring matching and fuzzy matching to handle OCR errors.
      */
     private function lineMatchesAny(string $line, array $keywords): bool
     {
-        // Normalize: lowercase + collapse whitespace
+        // Normalize: lowercase + collapse whitespace + strip non-alphanumeric except spaces
         $lower = strtolower(preg_replace('/\s+/', ' ', $line));
+        // Also create a stripped version for fuzzy matching (letters and spaces only)
+        $stripped = preg_replace('/[^a-z\s]/', '', $lower);
+        $stripped = preg_replace('/\s+/', ' ', trim($stripped));
+
         foreach ($keywords as $keyword) {
-            if (str_contains($lower, strtolower($keyword))) {
+            $kw = strtolower($keyword);
+
+            // Exact substring match
+            if (str_contains($lower, $kw)) {
                 return true;
+            }
+
+            // Fuzzy match: compare stripped versions using Levenshtein distance
+            // Only match against the label portion (strip trailing numbers)
+            $kwStripped = preg_replace('/[^a-z\s]/', '', $kw);
+            $kwStripped = preg_replace('/\s+/', ' ', trim($kwStripped));
+
+            if ($kwStripped === '') {
+                continue;
+            }
+
+            // Check if the stripped line contains a substring close to the keyword
+            // Use a sliding window approach for longer lines
+            $kwLen = strlen($kwStripped);
+            $strippedLen = strlen($stripped);
+
+            // For short keywords (< 8 chars), require exact substring match to avoid false positives
+            if ($kwLen < 8) {
+                if (str_contains($stripped, $kwStripped)) {
+                    return true;
+                }
+                continue;
+            }
+
+            // For longer keywords, allow up to ~20% character errors via Levenshtein
+            $maxDist = max(1, (int) ceil($kwLen * 0.2));
+
+            // If the whole stripped line is close in length to the keyword, compare directly
+            if (abs($strippedLen - $kwLen) <= $maxDist) {
+                if (levenshtein($stripped, $kwStripped) <= $maxDist) {
+                    return true;
+                }
+            }
+
+            // Slide a window of kwLen (+/- 2 chars) across the stripped line
+            if ($strippedLen >= $kwLen - 2) {
+                $loopEnd = max(0, $strippedLen - $kwLen + 3);
+                for ($start = 0; $start <= $loopEnd; $start++) {
+                    foreach ([$kwLen - 2, $kwLen - 1, $kwLen, $kwLen + 1, $kwLen + 2] as $windowSize) {
+                        if ($windowSize < 1 || $start + $windowSize > $strippedLen) {
+                            continue;
+                        }
+                        $substr = substr($stripped, $start, $windowSize);
+                        $dist = levenshtein($substr, $kwStripped);
+                        if ($dist <= $maxDist) {
+                            return true;
+                        }
+                    }
+                }
             }
         }
         return false;
