@@ -341,6 +341,10 @@
 
         .back-link:hover { text-decoration: underline; }
 
+        @media (max-width: 640px) {
+            .metrics-grid { grid-template-columns: repeat(2, 1fr); }
+        }
+
         footer {
             text-align: center;
             padding-top: 2rem;

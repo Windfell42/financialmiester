@@ -23,6 +23,50 @@ $scoreClass = match (true) {
     <div class="score-label"><?= htmlspecialchars($rating) ?></div>
 </div>
 
+<!-- Executive Summary -->
+<?php if (!empty($results['executive_summary']['highlights'])): ?>
+<div class="appraisal-box" style="margin-bottom:1.5rem;">
+    <h2>Executive Summary</h2>
+    <div style="display:flex;flex-wrap:wrap;gap:0.75rem;margin-bottom:1rem;">
+        <?php foreach ($results['executive_summary']['highlights'] as $hl):
+            $dotColor = match ($hl['status']) {
+                'positive' => 'var(--color-green)',
+                'neutral'  => 'var(--color-primary)',
+                'caution'  => 'var(--color-yellow)',
+                'negative' => 'var(--color-red)',
+                default    => 'var(--color-text-muted)',
+            };
+        ?>
+        <div style="background:var(--color-surface-alt);border-radius:8px;padding:0.6rem 1rem;display:flex;align-items:center;gap:0.5rem;">
+            <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:<?= $dotColor ?>;flex-shrink:0;"></span>
+            <span style="font-size:0.8rem;color:var(--color-text-muted);text-transform:uppercase;letter-spacing:0.04em;"><?= htmlspecialchars($hl['label']) ?></span>
+            <span style="font-weight:600;font-size:0.95rem;"><?= htmlspecialchars($hl['value']) ?></span>
+        </div>
+        <?php endforeach; ?>
+    </div>
+    <?php
+        $sev = $results['executive_summary']['severity_counts'];
+        $flagTotal = $results['executive_summary']['flag_count'];
+        $oppTotal = $results['executive_summary']['opportunity_count'];
+    ?>
+    <p style="font-size:0.9rem;color:var(--color-text-muted);">
+        <strong><?= $oppTotal ?></strong> strength<?= $oppTotal !== 1 ? 's' : '' ?> identified
+        &nbsp;&bull;&nbsp;
+        <strong><?= $flagTotal ?></strong> concern<?= $flagTotal !== 1 ? 's' : '' ?> flagged
+        <?php if ($sev['critical'] > 0): ?>
+            <span style="color:var(--color-red);font-weight:600;">
+                &nbsp;(<?= $sev['critical'] ?> critical)
+            </span>
+        <?php endif; ?>
+        <?php if ($sev['high'] > 0): ?>
+            <span style="color:var(--color-orange);font-weight:600;">
+                &nbsp;(<?= $sev['high'] ?> high)
+            </span>
+        <?php endif; ?>
+    </p>
+</div>
+<?php endif; ?>
+
 <!-- Appraisal -->
 <div class="appraisal-box">
     <h2>Appraisal</h2>
@@ -51,6 +95,10 @@ $scoreClass = match (true) {
         'equity_ratio' => ['Equity Ratio', ''],
         'working_capital' => ['Working Capital', '$'],
         'receivables_pct_revenue' => ['Receivables % Rev', '%'],
+        'cogs_pct_revenue' => ['COGS % Revenue', '%'],
+        'opex_ratio' => ['OpEx % Revenue', '%'],
+        'cash_pct_assets' => ['Cash % Assets', '%'],
+        'inventory_pct_current_assets' => ['Inventory % Current Assets', '%'],
     ];
 
     foreach ($results['metrics'] as $key => $value):

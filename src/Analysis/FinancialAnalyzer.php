@@ -23,8 +23,11 @@ class FinancialAnalyzer
         $this->computeMetrics();
         $this->assessProfitability();
         $this->assessLiquidity();
+        $this->assessCashPosition();
         $this->assessLeverage();
         $this->assessEfficiency();
+        $this->assessCostStructure();
+        $this->assessInventoryRisk();
         $this->assessGrowthIndicators();
         $this->assessDataCompleteness();
         $this->clampScore();
@@ -36,6 +39,7 @@ class FinancialAnalyzer
             'score' => round($this->score, 1),
             'score_breakdown' => $this->scoreBreakdown,
             'rating' => $this->scoreToRating($this->score),
+            'executive_summary' => $this->generateExecutiveSummary(),
             'appraisal' => $this->generateAppraisal(),
             'recommendation' => $this->generateRecommendation(),
         ];
@@ -55,8 +59,34 @@ class FinancialAnalyzer
 
     // ─── Metric Computation ──────────────────────────────────────
 
+    /**
+     * Derive missing income statement totals from their components
+     * when the PDF parser couldn't find the aggregate line.
+     */
+    private function deriveIncomeFields(): void
+    {
+        $inc = &$this->incomeData;
+
+        // Gross Profit = Revenue - COGS
+        if ($inc['gross_profit'] === null && $inc['revenue'] !== null && $inc['cost_of_goods_sold'] !== null) {
+            $inc['gross_profit'] = $inc['revenue'] - $inc['cost_of_goods_sold'];
+        }
+
+        // Operating Income = Gross Profit - Operating Expenses
+        if ($inc['operating_income'] === null && $inc['gross_profit'] !== null && $inc['operating_expenses'] !== null) {
+            $inc['operating_income'] = $inc['gross_profit'] - $inc['operating_expenses'];
+        }
+
+        // EBITDA = Operating Income + D&A (if not already set)
+        if ($inc['ebitda'] === null && $inc['operating_income'] !== null && $inc['depreciation_amortization'] !== null) {
+            $inc['ebitda'] = $inc['operating_income'] + abs($inc['depreciation_amortization']);
+        }
+    }
+
     private function computeMetrics(): void
     {
+        $this->deriveIncomeFields();
+
         $inc = $this->incomeData;
         $bal = $this->balanceData;
 
@@ -132,6 +162,26 @@ class FinancialAnalyzer
         // Equity ratio
         if ($bal['total_equity'] !== null && $bal['total_assets'] && $bal['total_assets'] != 0) {
             $this->metrics['equity_ratio'] = round($bal['total_equity'] / $bal['total_assets'], 2);
+        }
+
+        // COGS as % of revenue (cost structure)
+        if ($inc['cost_of_goods_sold'] !== null && $inc['revenue'] && $inc['revenue'] != 0) {
+            $this->metrics['cogs_pct_revenue'] = round(($inc['cost_of_goods_sold'] / $inc['revenue']) * 100, 2);
+        }
+
+        // Operating expense ratio (opex / revenue)
+        if ($inc['operating_expenses'] !== null && $inc['revenue'] && $inc['revenue'] != 0) {
+            $this->metrics['opex_ratio'] = round(($inc['operating_expenses'] / $inc['revenue']) * 100, 2);
+        }
+
+        // Cash as % of total assets
+        if ($bal['cash'] !== null && $bal['total_assets'] && $bal['total_assets'] != 0) {
+            $this->metrics['cash_pct_assets'] = round(($bal['cash'] / $bal['total_assets']) * 100, 2);
+        }
+
+        // Inventory as % of current assets
+        if ($bal['inventory'] !== null && $bal['total_current_assets'] && $bal['total_current_assets'] != 0) {
+            $this->metrics['inventory_pct_current_assets'] = round(($bal['inventory'] / $bal['total_current_assets']) * 100, 2);
         }
     }
 
@@ -442,6 +492,71 @@ class FinancialAnalyzer
         }
     }
 
+    // ─── Cash Position Assessment ──────────────────────────────
+
+    private function assessCashPosition(): void
+    {
+        // Cash Ratio (cash / current liabilities)
+        if (isset($this->metrics['cash_ratio'])) {
+            $cr = $this->metrics['cash_ratio'];
+            if ($cr >= 1.0) {
+                $this->opportunities[] = [
+                    'category' => 'Liquidity',
+                    'title' => 'Strong Cash Ratio',
+                    'detail' => "Cash ratio of {$cr} — the company can cover all current liabilities with cash alone, without relying on receivables or inventory.",
+                    'impact' => 'positive',
+                ];
+                $this->adjustScore(3, "Cash ratio {$cr} strong (>=1.0)");
+            } elseif ($cr >= 0.5) {
+                $this->opportunities[] = [
+                    'category' => 'Liquidity',
+                    'title' => 'Adequate Cash Ratio',
+                    'detail' => "Cash ratio of {$cr} — cash covers a reasonable portion of current liabilities.",
+                    'impact' => 'positive',
+                ];
+                $this->adjustScore(1, "Cash ratio {$cr} adequate (0.5-1.0)");
+            } elseif ($cr >= 0.2) {
+                $this->redFlags[] = [
+                    'category' => 'Liquidity',
+                    'title' => 'Low Cash Ratio',
+                    'detail' => "Cash ratio of {$cr} — limited cash buffer relative to current obligations. The company depends heavily on receivables collection or inventory liquidation to meet near-term debts.",
+                    'severity' => 'low',
+                ];
+                $this->adjustScore(-1, "Cash ratio {$cr} low (0.2-0.5)");
+            } else {
+                $this->redFlags[] = [
+                    'category' => 'Liquidity',
+                    'title' => 'Very Low Cash Ratio',
+                    'detail' => "Cash ratio of {$cr} — very thin cash reserves relative to current liabilities. A disruption to receivables or sales could cause immediate liquidity problems.",
+                    'severity' => 'medium',
+                ];
+                $this->adjustScore(-3, "Cash ratio {$cr} very low (<0.2)");
+            }
+        }
+
+        // Cash as percentage of total assets
+        if (isset($this->metrics['cash_pct_assets'])) {
+            $cp = $this->metrics['cash_pct_assets'];
+            if ($cp > 40) {
+                $this->redFlags[] = [
+                    'category' => 'Efficiency',
+                    'title' => 'Excessive Cash Holdings',
+                    'detail' => "Cash represents {$cp}% of total assets. While safe, this may indicate management is not effectively deploying capital for growth or returns.",
+                    'severity' => 'low',
+                ];
+                $this->adjustScore(-1, "Cash {$cp}% of assets (excess idle capital)");
+            } elseif ($cp < 2) {
+                $this->redFlags[] = [
+                    'category' => 'Liquidity',
+                    'title' => 'Minimal Cash Reserves',
+                    'detail' => "Cash is only {$cp}% of total assets — an unexpectedly low level that leaves almost no margin for operational disruptions.",
+                    'severity' => 'medium',
+                ];
+                $this->adjustScore(-2, "Cash only {$cp}% of assets (minimal reserves)");
+            }
+        }
+    }
+
     // ─── Leverage Assessment ─────────────────────────────────────
 
     private function assessLeverage(): void
@@ -647,6 +762,98 @@ class FinancialAnalyzer
         }
     }
 
+    // ─── Cost Structure Analysis ─────────────────────────────────
+
+    private function assessCostStructure(): void
+    {
+        // COGS as % of revenue
+        if (isset($this->metrics['cogs_pct_revenue'])) {
+            $cogs = $this->metrics['cogs_pct_revenue'];
+            if ($cogs > 85) {
+                $this->redFlags[] = [
+                    'category' => 'Cost Structure',
+                    'title' => 'Very High Cost of Goods Sold',
+                    'detail' => "COGS consumes {$cogs}% of revenue, leaving very little gross profit to cover operating expenses, interest, and taxes. Pricing power is extremely limited.",
+                    'severity' => 'high',
+                ];
+                $this->adjustScore(-5, "COGS {$cogs}% of revenue (very high)");
+            } elseif ($cogs > 70) {
+                $this->redFlags[] = [
+                    'category' => 'Cost Structure',
+                    'title' => 'Elevated Cost of Goods Sold',
+                    'detail' => "COGS at {$cogs}% of revenue indicates a cost-heavy business model. Efficiency improvements in production or procurement could meaningfully improve margins.",
+                    'severity' => 'medium',
+                ];
+                $this->adjustScore(-2, "COGS {$cogs}% of revenue (elevated)");
+            } elseif ($cogs <= 50) {
+                $this->opportunities[] = [
+                    'category' => 'Cost Structure',
+                    'title' => 'Low Direct Costs',
+                    'detail' => "COGS is only {$cogs}% of revenue, indicating a high-value or asset-light business model with strong unit economics.",
+                    'impact' => 'positive',
+                ];
+                $this->adjustScore(2, "COGS {$cogs}% of revenue (low — strong unit economics)");
+            }
+        }
+
+        // Operating expense ratio
+        if (isset($this->metrics['opex_ratio'])) {
+            $opex = $this->metrics['opex_ratio'];
+            if ($opex > 50) {
+                $this->redFlags[] = [
+                    'category' => 'Cost Structure',
+                    'title' => 'High Operating Expenses',
+                    'detail' => "Operating expenses represent {$opex}% of revenue. SG&A, R&D, or other overhead costs are consuming a disproportionate share of revenue.",
+                    'severity' => 'medium',
+                ];
+                $this->adjustScore(-3, "Operating expenses {$opex}% of revenue (high)");
+            } elseif ($opex > 35) {
+                $this->redFlags[] = [
+                    'category' => 'Cost Structure',
+                    'title' => 'Moderate Operating Expenses',
+                    'detail' => "Operating expenses at {$opex}% of revenue are moderate. Review whether overhead costs scale efficiently with revenue growth.",
+                    'severity' => 'low',
+                ];
+                $this->adjustScore(-1, "Operating expenses {$opex}% of revenue (moderate)");
+            } elseif ($opex <= 20) {
+                $this->opportunities[] = [
+                    'category' => 'Cost Structure',
+                    'title' => 'Lean Operating Expenses',
+                    'detail' => "Operating expenses are only {$opex}% of revenue — the company runs a lean operation with efficient overhead management.",
+                    'impact' => 'positive',
+                ];
+                $this->adjustScore(2, "Operating expenses {$opex}% of revenue (lean)");
+            }
+        }
+    }
+
+    // ─── Inventory Risk Analysis ──────────────────────────────────
+
+    private function assessInventoryRisk(): void
+    {
+        // Inventory as % of current assets
+        if (isset($this->metrics['inventory_pct_current_assets'])) {
+            $invPct = $this->metrics['inventory_pct_current_assets'];
+            if ($invPct > 60) {
+                $this->redFlags[] = [
+                    'category' => 'Liquidity',
+                    'title' => 'Inventory-Heavy Current Assets',
+                    'detail' => "Inventory accounts for {$invPct}% of current assets. Since inventory is the least liquid current asset, this reduces the company's ability to quickly meet obligations. Risk of obsolescence or write-downs is elevated.",
+                    'severity' => 'medium',
+                ];
+                $this->adjustScore(-3, "Inventory {$invPct}% of current assets (heavy)");
+            } elseif ($invPct > 40) {
+                $this->redFlags[] = [
+                    'category' => 'Liquidity',
+                    'title' => 'Significant Inventory in Current Assets',
+                    'detail' => "Inventory is {$invPct}% of current assets. While not unusual for manufacturing or retail, monitor for signs of slow-moving or obsolete stock.",
+                    'severity' => 'low',
+                ];
+                $this->adjustScore(-1, "Inventory {$invPct}% of current assets (significant)");
+            }
+        }
+    }
+
     // ─── Growth / Structure Indicators ───────────────────────────
 
     private function assessGrowthIndicators(): void
@@ -791,6 +998,35 @@ class FinancialAnalyzer
             $this->adjustScore(-$penalty, "{$totalMissing} key financial fields missing");
         }
 
+        // Negative equity detection
+        if ($bal['total_equity'] !== null && $bal['total_equity'] < 0) {
+            $this->redFlags[] = [
+                'category' => 'Financial Health',
+                'title' => 'Negative Shareholder Equity',
+                'detail' => "Total equity is -$" . number_format(abs($bal['total_equity'])) . " — liabilities exceed assets. The company is technically insolvent on a book-value basis. This is a severe warning sign that may indicate accumulated losses, excessive borrowing, or significant asset write-downs.",
+                'severity' => 'critical',
+            ];
+            $this->adjustScore(-12, "Negative shareholder equity (technical insolvency)");
+        }
+
+        // Balance sheet equation check: Assets ≈ Liabilities + Equity
+        if ($bal['total_assets'] !== null && $bal['total_liabilities'] !== null && $bal['total_equity'] !== null) {
+            $expected = $bal['total_liabilities'] + $bal['total_equity'];
+            $actual = $bal['total_assets'];
+            if ($actual != 0) {
+                $discrepancy = abs($actual - $expected) / abs($actual);
+                if ($discrepancy > 0.10) {
+                    $this->redFlags[] = [
+                        'category' => 'Data Quality',
+                        'title' => 'Balance Sheet Does Not Balance',
+                        'detail' => "Total Assets ($" . number_format($actual) . ") differs from Liabilities + Equity ($" . number_format($expected) . ") by " . round($discrepancy * 100, 1) . "%. This likely indicates a parsing error — some figures may be incorrect, which reduces confidence in the overall analysis.",
+                        'severity' => 'high',
+                    ];
+                    $this->adjustScore(-5, "Balance sheet equation discrepancy >" . round($discrepancy * 100) . "%");
+                }
+            }
+        }
+
         // No interest expense detected — note the limitation
         if ($inc['interest_expense'] === null && $bal['long_term_debt'] !== null && $bal['long_term_debt'] > 0) {
             $this->redFlags[] = [
@@ -804,6 +1040,79 @@ class FinancialAnalyzer
     }
 
     // ─── Scoring and Output ──────────────────────────────────────
+
+    private function generateExecutiveSummary(): array
+    {
+        $highlights = [];
+
+        // Profitability snapshot
+        if (isset($this->metrics['net_profit_margin'])) {
+            $npm = $this->metrics['net_profit_margin'];
+            $status = $npm > 15 ? 'positive' : ($npm > 5 ? 'neutral' : ($npm >= 0 ? 'caution' : 'negative'));
+            $highlights[] = [
+                'label' => 'Profitability',
+                'value' => "Net margin {$npm}%",
+                'status' => $status,
+            ];
+        } elseif (isset($this->metrics['gross_margin'])) {
+            $gm = $this->metrics['gross_margin'];
+            $status = $gm > 50 ? 'positive' : ($gm > 30 ? 'neutral' : 'caution');
+            $highlights[] = [
+                'label' => 'Profitability',
+                'value' => "Gross margin {$gm}%",
+                'status' => $status,
+            ];
+        }
+
+        // Liquidity snapshot
+        if (isset($this->metrics['current_ratio'])) {
+            $cr = $this->metrics['current_ratio'];
+            $status = $cr >= 1.5 ? 'positive' : ($cr >= 1.0 ? 'caution' : 'negative');
+            $highlights[] = [
+                'label' => 'Liquidity',
+                'value' => "Current ratio {$cr}x",
+                'status' => $status,
+            ];
+        }
+
+        // Leverage snapshot
+        if (isset($this->metrics['debt_to_equity'])) {
+            $de = $this->metrics['debt_to_equity'];
+            $status = $de <= 0.5 ? 'positive' : ($de <= 1.0 ? 'neutral' : ($de <= 2.0 ? 'caution' : 'negative'));
+            $highlights[] = [
+                'label' => 'Leverage',
+                'value' => "D/E ratio {$de}x",
+                'status' => $status,
+            ];
+        }
+
+        // Efficiency snapshot
+        if (isset($this->metrics['return_on_equity'])) {
+            $roe = $this->metrics['return_on_equity'];
+            $status = $roe > 15 ? 'positive' : ($roe > 5 ? 'neutral' : ($roe >= 0 ? 'caution' : 'negative'));
+            $highlights[] = [
+                'label' => 'Returns',
+                'value' => "ROE {$roe}%",
+                'status' => $status,
+            ];
+        }
+
+        // Severity breakdown
+        $severityCounts = ['critical' => 0, 'high' => 0, 'medium' => 0, 'low' => 0];
+        foreach ($this->redFlags as $flag) {
+            $sev = $flag['severity'] ?? 'medium';
+            if (isset($severityCounts[$sev])) {
+                $severityCounts[$sev]++;
+            }
+        }
+
+        return [
+            'highlights' => $highlights,
+            'flag_count' => count($this->redFlags),
+            'opportunity_count' => count($this->opportunities),
+            'severity_counts' => $severityCounts,
+        ];
+    }
 
     private function clampScore(): void
     {
